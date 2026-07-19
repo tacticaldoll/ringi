@@ -5,6 +5,7 @@
 //! See `PROJECT.md` and `BACKLOG.md`.
 
 pub mod agent;
+pub mod config;
 pub mod exec;
 pub mod reconcile;
 pub mod run;
