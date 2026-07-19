@@ -15,6 +15,8 @@ repository = "https://github.com/tacticaldoll/ringi"
 # family members, so they arrive as git dependencies until they release.
 pacta = "0.1.2"
 pacta-memory = "0.1.2"
+pacta-conformance = "0.1.2"
+rusqlite = { version = "0.32", features = ["bundled"] }
 # Unpublished family members — git deps at release/0.1.0 until they release, then crates.io.
 suunta = { git = "https://github.com/tacticaldoll/suunta", branch = "release/0.1.0" }
 shaahid = { git = "https://github.com/tacticaldoll/shaahid", branch = "release/0.1.0" }
