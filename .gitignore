@@ -1,4 +1,7 @@
 /target/
+# ringi runtime artifacts (created by `ringi init`/`ringi run` in a working directory)
+/.ringi/
+/ringi.toml
 /.agent/
 /.agents/
 /.amazonq/
