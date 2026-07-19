@@ -109,6 +109,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 cargo deny check
+./scripts/naming-guard.sh   # naming-worldview guard — see docs/naming.md
 ```
 
 As the surface grows, the DoD gains: the security tests (path traversal, symlink escape,
