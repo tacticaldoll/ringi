@@ -60,6 +60,16 @@ multi-host workflow, a message broker, a Kubernetes worker pool, an auto-deploye
 unrestricted shell. Agent CLIs bring the intelligence and tools; ringi brings order, proof,
 permission, and durability.
 
+On the LLM-API line specifically — the non-goal is the **layer**, not the act of calling a
+model. `AgentAdapter` is the abstraction over *how an agent is invoked*; a `SubprocessAdapter`
+(Agent-CLI) externalizes model choice, prompts, keys, and caching into the CLI, which is why it
+keeps ringi thin. A direct-API adapter is a legitimate second branch of that same seam **iff it
+stays thin**: a single config-specified model, retry/gating **borrowed from composed Layers**
+(see `docs/round-model.md` ③), and **no caching**. What is forbidden is the *provider layer* —
+model routing/arbitration, semantic caching, prompt-template management — i.e. what a
+predecessor (`../mirrorlane`) grew as its `provider` crate. Agent CLIs are the default; a
+direct-API adapter is the thin exception, never a provider.
+
 ## References
 
 - Naming worldview (native register, seam rule, banned queue-runtime vocabulary): `docs/naming.md`

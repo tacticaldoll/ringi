@@ -84,6 +84,23 @@ creation (ingress is backend/consumer territory, by pacta's design).
      not raised. Fake-agent test covers success/non-zero/malformed/timeout.
    - Still pending on this surface: Builder/Reviewer role wiring into the loop, `git diff`
      capture, the verification runner, and the CLI beyond stubs.
+   - **Adapter-seam stance (for the Reviewer/findings-as-targets change's design).** The
+     Reviewer stays strictly behind `AgentAdapter` (scripted first, subprocess next); the loop
+     and findings model never depend on how an agent is invoked. A direct-API adapter is a
+     future thin exception, not built now (force-then-extract) — when forced, it borrows
+     retry/gating from composed Layers and does no caching (see the sharpened LLM-API non-goal
+     in `PROJECT.md`). Debt to note, not fix now: `AgentRequest` is subprocess-flavored
+     (`workspace`/`env`/`timeout`); the seam's neutrality is revisited when an API adapter is
+     actually forced (phase 5 adapter multiplication), never pre-abstracted.
+   - **Sequencing correction (apply-time discovery).** The in-flight coverage seam was proposed
+     and started as the next change, then **shelved**: suunta's coverage has no honest teeth in
+     a synchronous, fixed-target loop — `CoverageEffect::Covers` omits a target *and does not
+     surface it*, so covering a still-pending retry converges prematurely and drops the retry;
+     and `Supersedes`/`Conflicts` never fire without a changing target set. So **Reviewer +
+     findings-as-targets comes first** (it is what makes the target set change), and the
+     in-flight seam lands with/after it. See the corrected `docs/round-model.md` "first
+     increment". The shelved proposal is preserved in git on the
+     `change/report-in-flight-coverage` branch.
 2. **Persistence**: `SqliteRegistry` over pacta's contract (conformance-proven) + ringi's
    domain tables; runs/steps/events/artifacts; resume.
    - **Registry half — landed.** `store::SqliteRegistry` implements `pacta::Registry` over

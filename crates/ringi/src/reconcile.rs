@@ -172,13 +172,145 @@ pub struct Report {
     pub deduplicated: HashSet<String>,
 }
 
+// ---------------------------------------------------------------------------------------------
+// The round loop: propose -> verify -> review -> converge.
+//
+// Three roles, each its own seam (never one composable trait — that is the mirrorlane `Step`
+// engine returning; see docs/round-model.md "Why this is not mirrorlane redux"): a Builder
+// proposes, ringi's own Verification objectively certifies the goal, and a Reviewer surfaces
+// findings. The goal `G` and each open finding are suunta targets; convergence stays suunta's.
+// ---------------------------------------------------------------------------------------------
+
+/// The objective verdict on the goal. Ringi re-runs the checks itself; an agent never decides
+/// this (PROJECT.md: tool verification outranks model opinion).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Verdict {
+    /// The goal is objectively met.
+    Pass,
+    /// The goal is not met; it stays in the residual for another round.
+    Fail,
+}
+
+/// Ringi's own objective certifier of the goal `G`. This increment's implementations are
+/// scripted; a real command runner (build/test/lint) lands in a later change. It is ringi's own
+/// blood, not a brick.
+pub trait Verification {
+    /// Certify whether the goal is objectively met at `round`.
+    fn verify(&self, round: usize) -> Verdict;
+}
+
+/// A single review finding — a defect the Reviewer raises. `id` is stable across rounds, so the
+/// same finding keeps one target identity until a re-review no longer reports it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Finding {
+    /// Stable identity of the finding across rounds.
+    pub id: String,
+    /// Human-readable description (rides in the pact clause; ringi does not interpret it).
+    pub summary: String,
+}
+
+/// The seam by which ringi scrutinizes a build result. A review is read-only and returns the
+/// full set of currently-open findings; a finding absent from a later review is resolved.
+pub trait ReviewRunner {
+    /// Review the state at `round`, returning every finding still open.
+    fn review(&self, round: usize) -> Vec<Finding>;
+}
+
+/// The seam by which ringi performs a round's build work toward the goal and open findings.
+/// Distinct from [`ReviewRunner`]/[`Verification`] — three roles, not one trait.
+pub trait RoundBuilder {
+    /// Perform `round`'s build work and report whether the attempt succeeded.
+    fn build(&self, round: usize) -> StepOutcome;
+}
+
+/// A read-only Reviewer backed by an [`AgentAdapter`]: it runs a Reviewer agent and parses the
+/// findings from its structured output. Depends only on the seam, so any adapter backs it.
+#[derive(Debug, Clone)]
+pub struct AgentReviewRunner<A> {
+    adapter: A,
+    workspace: PathBuf,
+    timeout: Duration,
+}
+
+impl<A: AgentAdapter> AgentReviewRunner<A> {
+    /// A Reviewer runner over `adapter`, reviewing in `workspace` bounded by `timeout`.
+    pub fn new(adapter: A, workspace: impl Into<PathBuf>, timeout: Duration) -> Self {
+        Self {
+            adapter,
+            workspace: workspace.into(),
+            timeout,
+        }
+    }
+}
+
+/// Parse findings from a Reviewer agent's structured output: `{"findings":[{"id","summary"}]}`.
+/// Best-effort — a missing or malformed shape yields no findings.
+fn parse_findings(structured: Option<serde_json::Value>) -> Vec<Finding> {
+    let Some(value) = structured else {
+        return Vec::new();
+    };
+    let Some(array) = value.get("findings").and_then(|f| f.as_array()) else {
+        return Vec::new();
+    };
+    array
+        .iter()
+        .filter_map(|f| {
+            let id = f.get("id")?.as_str()?.to_string();
+            let summary = f
+                .get("summary")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            Some(Finding { id, summary })
+        })
+        .collect()
+}
+
+impl<A: AgentAdapter> ReviewRunner for AgentReviewRunner<A> {
+    fn review(&self, round: usize) -> Vec<Finding> {
+        let request = AgentRequest {
+            role: AgentRole::Reviewer,
+            prompt: format!("Review the work for round {round} and report findings."),
+            workspace: self.workspace.clone(),
+            timeout: self.timeout,
+            env: HashMap::new(),
+        };
+        // A read-only review: parse findings on success. An infrastructure failure surfaces no
+        // findings here (real error handling — not treating a failed review as a clean one — is
+        // a later change; this increment's tests drive successful reviews).
+        match self.adapter.run(request) {
+            Ok(response) => parse_findings(response.structured),
+            Err(_) => Vec::new(),
+        }
+    }
+}
+
 /// Thin seam adapters — mapping only. Any logic here beyond translation is the monolith
 /// returning.
 mod seam {
-    use super::{Correction, Deed, Sigil, StepSpec};
+    use super::{Correction, Deed, Finding, Reversibility, Sigil, StepSpec};
     use pacta::Pact;
     use shaahid::Fingerprint;
     use uuid::Uuid;
+
+    /// The exactly-once identity of a single **attempt** — a coordinate distinct from a
+    /// target's `Sigil` (round-model ①). suunta reasons about targets (`Sigil`); shaahid/pacta
+    /// reason about attempts (`Seal`). The coordinate is `<run>:<target>:<round>:<attempt>`:
+    /// a reclaim of the same attempt re-presents the same `Seal` (witnessed as already done),
+    /// while a new round is a new coordinate and therefore new work. The flat reconcile has no
+    /// rounds, so it uses a degenerate coordinate (round 0, attempt 0); the round loop supplies
+    /// real coordinates.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct Seal(String);
+
+    impl Seal {
+        /// The attempt coordinate for `target` in `run` at `round`/`attempt`. shaahid compares
+        /// the whole `Seal` by value; ringi never parses the string back.
+        #[must_use]
+        pub fn new(run: &str, target: &Sigil, round: usize, attempt: usize) -> Self {
+            Self(format!("{run}:{}:{round}:{attempt}", target.as_str()))
+        }
+    }
 
     /// Deterministic identity bridge: a step's `Sigil` (a string) -> the `Pact`'s `Uuid`.
     /// The `Sigil` string also rides in the clause, so nothing is lost.
@@ -197,13 +329,59 @@ mod seam {
         )
     }
 
-    /// A step attempt becomes a `Deed`: `Seal` is the step identity (Sigil == Seal), the
-    /// fingerprint is the content identity of the step spec.
-    pub fn deed_for_step(correction: &Correction<StepSpec>) -> Deed<String> {
+    /// A step attempt becomes a `Deed`: the `Seal` is the attempt coordinate (distinct from the
+    /// target `Sigil`), the fingerprint is the content identity of the step spec. The flat
+    /// reconcile has no rounds, so the coordinate is degenerate (round 0, attempt 0) yet stable
+    /// per target — a reclaim after success re-presents the same `Seal` and attaches.
+    pub fn deed_for_step(correction: &Correction<StepSpec>) -> Deed<Seal> {
         let sigil = correction.sigil();
         Deed::new(
-            sigil.as_str().to_string(),
+            Seal::new("reconcile", sigil, 0, 0),
             Fingerprint::new(correction.body().id.as_bytes().to_vec()),
+        )
+    }
+
+    // ---- Round-loop mappings ---------------------------------------------------------------
+
+    /// The goal target's stable identity.
+    pub fn goal_sigil() -> Sigil {
+        Sigil::new("goal")
+    }
+
+    /// A finding's stable target identity, held across rounds until a re-review drops it.
+    pub fn finding_sigil(finding: &Finding) -> Sigil {
+        Sigil::new(format!("finding:{}", finding.id))
+    }
+
+    /// The goal as a suunta target (payload unused — per-round mode does not execute per-target).
+    pub fn goal_correction() -> Correction<()> {
+        Correction::new(goal_sigil(), Reversibility::Reversible, ())
+    }
+
+    /// An open finding as a suunta target.
+    pub fn finding_correction(finding: &Finding) -> Correction<()> {
+        Correction::new(finding_sigil(finding), Reversibility::Reversible, ())
+    }
+
+    /// The docket a round's build attempt is claimed by.
+    pub fn build_docket(run: &str, round: usize) -> String {
+        format!("{run}:build:{round}")
+    }
+
+    /// The pact for a round's build attempt.
+    pub fn build_pact(run: &str, round: usize) -> Pact {
+        let docket = build_docket(run, round);
+        let id = Uuid::new_v5(&Uuid::NAMESPACE_OID, docket.as_bytes());
+        Pact::new(id, docket.clone(), "build".to_string(), docket.into_bytes())
+    }
+
+    /// The `Deed` witnessing a round's build attempt: the `Seal` is the attempt coordinate
+    /// (`<run>:build:<round>:<attempt>`), the fingerprint is over the attempt's input identity.
+    pub fn build_deed(run: &str, round: usize, attempt: usize) -> Deed<Seal> {
+        let seal = Seal::new(run, &Sigil::new("build"), round, attempt);
+        Deed::new(
+            seal,
+            Fingerprint::new(build_docket(run, round).into_bytes()),
         )
     }
 }
@@ -288,7 +466,7 @@ where
     );
 
     // Consumer state — none of it a lifecycle/convergence/idempotency engine.
-    let mut ledger: Vec<Deed<String>> = Vec::new(); // shaahid: steps whose work succeeded
+    let mut ledger: Vec<Deed<seam::Seal>> = Vec::new(); // shaahid: attempts whose work succeeded
     let mut done: HashSet<String> = HashSet::new(); // domain satisfaction
     let mut executions: HashMap<String, u32> = HashMap::new();
     let mut retried: HashSet<String> = HashSet::new();
@@ -395,6 +573,240 @@ where
     }
 }
 
+/// Consumer-held bound on rounds (Layer-3 termination — a review can always find more, so the
+/// loop must not depend on the Reviewer ever going quiet).
+const MAX_ROUNDS: usize = 16;
+
+/// The observable outcome of a round-loop run, for asserting the composition.
+#[derive(Debug)]
+pub struct RoundReport {
+    /// Rounds the loop ran.
+    pub rounds: usize,
+    /// Whether suunta reported the run converged (vs. hitting the round bound).
+    pub converged: bool,
+    /// Per-round count of how many times the build side effect executed (exactly-once ⇒ 1).
+    pub build_executions: HashMap<usize, u32>,
+    /// Rounds whose build attempt was reclaimed after a lost settlement and suppressed by
+    /// shaahid (attached, not re-executed).
+    pub reclaimed: HashSet<usize>,
+    /// The Bearing size at each round, so a test can observe the target set changing.
+    pub bearing_sizes: Vec<usize>,
+    /// Finding ids still open when the loop ended.
+    pub open_findings: Vec<String>,
+}
+
+/// Run the round loop over any backend built by `make`, driving Build → Verify → (green?)
+/// Review until suunta reports convergence or the round bound is hit. Production entry point
+/// (no fault injection). The goal `G` and each open finding are suunta targets; the goal's
+/// satisfaction is the `Verification` verdict and never the Reviewer's output; convergence is
+/// suunta's alone. Build/Review/Verify are three concrete roles wired here — never one
+/// composable trait (that is the mirrorlane `Step` engine returning).
+pub fn run_rounds<B, Rv, V, F, Reg>(
+    run_id: &str,
+    builder: &B,
+    reviewer: &Rv,
+    verification: &V,
+    make: F,
+) -> RoundReport
+where
+    B: RoundBuilder,
+    Rv: ReviewRunner,
+    V: Verification,
+    Reg: Registry,
+    Reg::Error: std::fmt::Debug,
+    F: FnOnce(Vec<Pact>, u64) -> Reg,
+{
+    run_rounds_core(
+        run_id,
+        builder,
+        reviewer,
+        verification,
+        make,
+        HashSet::new(),
+    )
+}
+
+/// The round loop body, parameterized over the backend and the (test-only) set of rounds whose
+/// build settlement is lost once — to exercise reclaim + exactly-once at the attempt grain.
+fn run_rounds_core<B, Rv, V, F, Reg>(
+    run_id: &str,
+    builder: &B,
+    reviewer: &Rv,
+    verification: &V,
+    make: F,
+    mut lapse_rounds: HashSet<usize>,
+) -> RoundReport
+where
+    B: RoundBuilder,
+    Rv: ReviewRunner,
+    V: Verification,
+    Reg: Registry,
+    Reg::Error: std::fmt::Debug,
+    F: FnOnce(Vec<Pact>, u64) -> Reg,
+{
+    // pacta-memory has no runtime enqueue, so seed one build pact per possible round upfront
+    // (ingress is the backend's; a durable backend would create them idempotently at runtime).
+    let pacts: Vec<Pact> = (0..MAX_ROUNDS)
+        .map(|r| seam::build_pact(run_id, r))
+        .collect();
+    let registry = make(pacts, LEASE_MILLIS);
+
+    let mut ledger: Vec<Deed<seam::Seal>> = Vec::new();
+    let mut open_findings: Vec<Finding> = Vec::new();
+    let mut build_executions: HashMap<usize, u32> = HashMap::new();
+    let mut reclaimed: HashSet<usize> = HashSet::new();
+    let mut bearing_sizes: Vec<usize> = Vec::new();
+
+    let mut now = 0u64;
+    let mut rounds = 0usize;
+    let mut converged = false;
+
+    while rounds < MAX_ROUNDS {
+        let round = rounds;
+        rounds += 1;
+
+        // 1. This round's build attempt — per-round, durable (pacta) and exactly-once (shaahid).
+        let (execs, was_reclaimed) = drive_build(
+            &registry,
+            &mut ledger,
+            run_id,
+            round,
+            builder,
+            &mut now,
+            lapse_rounds.remove(&round),
+        );
+        *build_executions.entry(round).or_insert(0) += execs;
+        if was_reclaimed {
+            reclaimed.insert(round);
+        }
+
+        // 2. Verify certifies the goal — objective, never the Reviewer's opinion.
+        let verdict = verification.verify(round);
+
+        // 3. Review only a green build; a red goal skips review and drives another round.
+        if verdict == Verdict::Pass {
+            open_findings = reviewer.review(round);
+        }
+
+        // 4. Present the changing Bearing to suunta and let it decide convergence.
+        let targets: Vec<Correction<()>> = std::iter::once(seam::goal_correction())
+            .chain(open_findings.iter().map(seam::finding_correction))
+            .collect();
+        bearing_sizes.push(targets.len());
+
+        let goal_satisfaction = match verdict {
+            Verdict::Pass => Satisfaction::Satisfied,
+            Verdict::Fail => Satisfaction::Unsatisfied,
+        };
+        let mut fix = vec![SatisfactionFinding {
+            target: seam::goal_sigil(),
+            satisfaction: goal_satisfaction,
+        }];
+        // An open finding is Unsatisfied by definition; a resolved one is simply absent.
+        for finding in &open_findings {
+            fix.push(SatisfactionFinding {
+                target: seam::finding_sigil(finding),
+                satisfaction: Satisfaction::Unsatisfied,
+            });
+        }
+        let sounding = Sounding::new(Fix::new(fix), Vec::new());
+        let residual = plan_residual(Bearing::new(targets), &sounding);
+        if residual.is_converged() {
+            converged = true;
+            break;
+        }
+    }
+
+    RoundReport {
+        rounds,
+        converged,
+        build_executions,
+        reclaimed,
+        bearing_sizes,
+        open_findings: open_findings.into_iter().map(|f| f.id).collect(),
+    }
+}
+
+/// Drive one round's build attempt to a settled state, composing pacta (claim/settle) and
+/// shaahid (exactly-once). Returns how many times the build side effect executed (0 or 1) and
+/// whether it was reclaimed after a lost settlement. If `lapse`, the first successful settlement
+/// is dropped, so the lease lapses and the attempt is reclaimed — shaahid then attaches and the
+/// build is not re-executed.
+fn drive_build<B, Reg>(
+    registry: &Reg,
+    ledger: &mut Vec<Deed<seam::Seal>>,
+    run_id: &str,
+    round: usize,
+    builder: &B,
+    now: &mut u64,
+    mut lapse: bool,
+) -> (u32, bool)
+where
+    B: RoundBuilder,
+    Reg: Registry,
+    Reg::Error: std::fmt::Debug,
+{
+    let docket = seam::build_docket(run_id, round);
+    let mut execs = 0u32;
+    let mut reclaimed = false;
+
+    // Bounded so a persistently failing scripted build cannot spin forever.
+    for _ in 0..8 {
+        let Some(claim) = registry
+            .claim(&[docket.as_str()], Timestamp::from_millis(*now))
+            .expect("build claim never errors here")
+        else {
+            // Withheld (released or lapsed, not yet reclaimable) — advance and retry.
+            *now += TICK_MILLIS;
+            continue;
+        };
+
+        let deed = seam::build_deed(run_id, round, 0);
+        let outcome = witness(ledger, deed.clone());
+        if !outcome.contradictions.is_empty() {
+            // Deterministic deeds here raise none; wired for correctness.
+            *now += TICK_MILLIS;
+            continue;
+        }
+
+        match outcome.attestation {
+            // A reclaim after a lost settlement: the attempt already ran — do not re-run it.
+            Attestation::Attach(_) => {
+                reclaimed = true;
+                registry.fulfill(&claim.retainer).expect("fulfill");
+                break;
+            }
+            Attestation::Create => match builder.build(round) {
+                StepOutcome::Succeeded => {
+                    execs += 1;
+                    ledger.push(deed);
+                    if lapse {
+                        // Drop this settlement: do not fulfill. Advance past the lease so the
+                        // pact lapses and is reclaimed next iteration -> witnessed as Attach.
+                        lapse = false;
+                        *now += LEASE_MILLIS + TICK_MILLIS;
+                        continue;
+                    }
+                    registry.fulfill(&claim.retainer).expect("fulfill");
+                    break;
+                }
+                StepOutcome::Failed => {
+                    registry
+                        .release(
+                            &claim.retainer,
+                            Timestamp::from_millis(*now + BACKOFF_MILLIS),
+                        )
+                        .expect("release");
+                    *now += TICK_MILLIS;
+                }
+            },
+        }
+    }
+
+    *now += TICK_MILLIS;
+    (execs, reclaimed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -459,6 +871,168 @@ mod tests {
         }
         assert!(report.retried.contains("step:fails-first"), "{report:?}");
         assert!(report.deduplicated.contains("step:lapses"), "{report:?}");
+    }
+
+    // ---- Round loop -----------------------------------------------------------------------
+
+    /// A scripted Builder: every attempt "runs". Whether the goal is met is Verify's call.
+    struct ScriptBuild;
+    impl RoundBuilder for ScriptBuild {
+        fn build(&self, _round: usize) -> StepOutcome {
+            StepOutcome::Succeeded
+        }
+    }
+
+    /// A scripted Verify: red until `pass_from`, then green.
+    struct ScriptVerify {
+        pass_from: usize,
+    }
+    impl Verification for ScriptVerify {
+        fn verify(&self, round: usize) -> Verdict {
+            if round >= self.pass_from {
+                Verdict::Pass
+            } else {
+                Verdict::Fail
+            }
+        }
+    }
+
+    /// A scripted Reviewer: returns the finding set scheduled for the round (empty past the end).
+    struct ScriptReview {
+        schedule: Vec<Vec<Finding>>,
+    }
+    impl ReviewRunner for ScriptReview {
+        fn review(&self, round: usize) -> Vec<Finding> {
+            self.schedule.get(round).cloned().unwrap_or_default()
+        }
+    }
+
+    /// A scripted Reviewer that surfaces the same findings every round (never resolves them).
+    struct ConstReview {
+        findings: Vec<Finding>,
+    }
+    impl ReviewRunner for ConstReview {
+        fn review(&self, _round: usize) -> Vec<Finding> {
+            self.findings.clone()
+        }
+    }
+
+    fn finding(id: &str) -> Finding {
+        Finding {
+            id: id.to_string(),
+            summary: format!("resolve {id}"),
+        }
+    }
+
+    #[test]
+    fn the_round_loop_converges_over_a_changing_bearing() {
+        // round 0: goal not yet met (red) -> no review.
+        // round 1: goal met (green) -> review surfaces F1, F2.
+        // round 2: goal met, review clean -> converge.
+        let reviewer = ScriptReview {
+            schedule: vec![
+                Vec::new(),                         // round 0 (not consulted: red)
+                vec![finding("F1"), finding("F2")], // round 1
+                Vec::new(),                         // round 2: resolved
+            ],
+        };
+        let report = run_rounds(
+            "run-converge",
+            &ScriptBuild,
+            &reviewer,
+            &ScriptVerify { pass_from: 1 },
+            MemoryRegistry::seeded,
+        );
+
+        assert!(report.converged, "the round loop must converge: {report:?}");
+        assert_eq!(report.rounds, 3, "red, findings, then clean: {report:?}");
+        // The Bearing changed as findings appeared then resolved.
+        assert_eq!(report.bearing_sizes, vec![1, 3, 1], "{report:?}");
+        for r in 0..3 {
+            assert_eq!(
+                report.build_executions.get(&r).copied(),
+                Some(1),
+                "each round built exactly once: {report:?}"
+            );
+        }
+        assert!(report.open_findings.is_empty(), "{report:?}");
+    }
+
+    #[test]
+    fn no_findings_but_red_verify_does_not_converge() {
+        // The Reviewer never surfaces anything, but Verify never passes: completion is Verify's
+        // verdict, never the absence of findings, so the run does not converge.
+        let report = run_rounds(
+            "run-red",
+            &ScriptBuild,
+            &ScriptReview {
+                schedule: Vec::new(),
+            },
+            &ScriptVerify {
+                pass_from: usize::MAX,
+            },
+            MemoryRegistry::seeded,
+        );
+        assert!(
+            !report.converged,
+            "a red goal must not converge: {report:?}"
+        );
+        assert_eq!(
+            report.rounds, MAX_ROUNDS,
+            "bounded, not infinite: {report:?}"
+        );
+    }
+
+    #[test]
+    fn green_verify_but_open_finding_does_not_converge() {
+        // The goal is green from the start, but a finding is never resolved: an open finding is a
+        // real target, so it keeps the run from converging.
+        let report = run_rounds(
+            "run-open",
+            &ScriptBuild,
+            &ConstReview {
+                findings: vec![finding("F1")],
+            },
+            &ScriptVerify { pass_from: 0 },
+            MemoryRegistry::seeded,
+        );
+        assert!(
+            !report.converged,
+            "an open finding must block convergence: {report:?}"
+        );
+        assert_eq!(report.rounds, MAX_ROUNDS, "{report:?}");
+        assert_eq!(report.open_findings, vec!["F1".to_string()], "{report:?}");
+    }
+
+    #[test]
+    fn a_reclaimed_build_attempt_is_not_re_executed() {
+        // The converging scenario, but round 1's build settlement is lost: the lease lapses, the
+        // attempt is reclaimed, and shaahid attaches -> the build is not re-executed.
+        let reviewer = ScriptReview {
+            schedule: vec![Vec::new(), vec![finding("F1")], Vec::new()],
+        };
+        let report = run_rounds_core(
+            "run-reclaim",
+            &ScriptBuild,
+            &reviewer,
+            &ScriptVerify { pass_from: 1 },
+            MemoryRegistry::seeded,
+            HashSet::from([1usize]),
+        );
+
+        assert!(
+            report.converged,
+            "must still converge after a reclaim: {report:?}"
+        );
+        assert!(
+            report.reclaimed.contains(&1),
+            "round 1's attempt was reclaimed: {report:?}"
+        );
+        assert_eq!(
+            report.build_executions.get(&1).copied(),
+            Some(1),
+            "round 1 built exactly once despite the reclaim: {report:?}"
+        );
     }
 
     #[cfg(unix)]
@@ -539,6 +1113,41 @@ mod tests {
                 report.executions.get("step:flaky").copied(),
                 Some(1),
                 "the step must execute exactly once (only the successful attempt): {report:?}"
+            );
+        }
+
+        fn review_runner(
+            script: &Path,
+            workspace: PathBuf,
+        ) -> AgentReviewRunner<SubprocessAdapter> {
+            AgentReviewRunner::new(
+                SubprocessAdapter::new(script.to_string_lossy().to_string(), Vec::new()),
+                workspace,
+                Duration::from_secs(5),
+            )
+        }
+
+        #[test]
+        fn an_agent_reviewer_parses_findings_from_structured_output() {
+            let ws = workspace("review");
+            let script = script_in(
+                &ws,
+                "reviewer.sh",
+                "echo '{\"findings\":[{\"id\":\"F1\",\"summary\":\"bug\"},{\"id\":\"F2\",\"summary\":\"nit\"}]}'\nexit 0",
+            );
+            let findings = review_runner(&script, ws.clone()).review(0);
+            assert_eq!(findings.len(), 2, "two findings parsed: {findings:?}");
+            assert_eq!(findings[0].id, "F1");
+            assert_eq!(findings[1].id, "F2");
+        }
+
+        #[test]
+        fn an_agent_reviewer_with_no_findings_is_clean() {
+            let ws = workspace("review-clean");
+            let script = script_in(&ws, "reviewer-clean.sh", "echo '{\"findings\":[]}'\nexit 0");
+            assert!(
+                review_runner(&script, ws.clone()).review(0).is_empty(),
+                "an empty findings array is a clean review"
             );
         }
     }
