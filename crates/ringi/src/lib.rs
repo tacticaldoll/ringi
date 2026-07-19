@@ -6,8 +6,12 @@
 
 pub mod agent;
 pub mod config;
+pub mod deliberation;
+pub mod dossier;
+pub mod event;
 pub mod exec;
 pub mod reconcile;
+pub mod revision;
 pub mod run;
 pub mod store;
 pub mod verify;

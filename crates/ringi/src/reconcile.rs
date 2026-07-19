@@ -124,8 +124,9 @@ impl<A: AgentAdapter> StepRunner for AgentStepRunner<A> {
     fn run(&self, step: &StepSpec) -> StepOutcome {
         let request = AgentRequest {
             role: AgentRole::Builder,
+            session_instruction: None,
             prompt: format!("Perform step: {}", step.id),
-            workspace: self.workspace.clone(),
+            working_dir: self.workspace.clone(),
             timeout: self.timeout,
             env: HashMap::new(),
         };
@@ -264,10 +265,11 @@ impl<A: AgentAdapter> RoundBuilder for AgentRoundBuilder<A> {
     fn build(&self, round: usize) -> StepOutcome {
         let request = AgentRequest {
             role: AgentRole::Builder,
+            session_instruction: None,
             // Task-aware: the run's task rides in the prompt. Conveying the round's open findings
             // is a later change; `build` still takes only the round.
             prompt: format!("Task: {}\n\nPerform build for round {round}.", self.task),
-            workspace: self.workspace.clone(),
+            working_dir: self.workspace.clone(),
             timeout: self.timeout,
             env: HashMap::new(),
         };
@@ -324,8 +326,9 @@ impl<A: AgentAdapter> ReviewRunner for AgentReviewRunner<A> {
     fn review(&self, round: usize) -> Vec<Finding> {
         let request = AgentRequest {
             role: AgentRole::Reviewer,
+            session_instruction: None,
             prompt: format!("Review the work for round {round} and report findings."),
-            workspace: self.workspace.clone(),
+            working_dir: self.workspace.clone(),
             timeout: self.timeout,
             env: HashMap::new(),
         };
@@ -333,7 +336,7 @@ impl<A: AgentAdapter> ReviewRunner for AgentReviewRunner<A> {
         // findings here (real error handling — not treating a failed review as a clean one — is
         // a later change; this increment's tests drive successful reviews).
         match self.adapter.run(request) {
-            Ok(response) => parse_findings(response.structured),
+            Ok(response) => parse_findings(response.metadata),
             Err(_) => Vec::new(),
         }
     }

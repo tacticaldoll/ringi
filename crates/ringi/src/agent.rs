@@ -18,9 +18,11 @@ use crate::exec;
 /// Which agent role an invocation is for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentRole {
-    /// Proposes changes.
+    Respondent,
+    Arbitrator,
+    ConditionEvaluator,
+    // Legacy roles (removed in 8.3)
     Builder,
-    /// Scrutinizes changes; read-only.
     Reviewer,
 }
 
@@ -29,10 +31,12 @@ pub enum AgentRole {
 pub struct AgentRequest {
     /// The role this invocation plays.
     pub role: AgentRole,
+    /// A system instruction for the session (e.g. persona or format constraints).
+    pub session_instruction: Option<String>,
     /// The prompt handed to the agent (delivered on stdin).
     pub prompt: String,
     /// The working directory the agent runs in.
-    pub workspace: PathBuf,
+    pub working_dir: PathBuf,
     /// The wall-clock bound on the invocation.
     pub timeout: Duration,
     /// Extra environment variables to expose (added to a minimized base).
@@ -45,12 +49,12 @@ pub struct AgentRequest {
 pub struct AgentResponse {
     /// The process exit code, if the process exited normally.
     pub exit_code: Option<i32>,
-    /// Captured standard output.
+    /// Captured standard output (the natural-language answer).
     pub stdout: String,
     /// Captured standard error.
     pub stderr: String,
-    /// The agent's structured output, parsed best-effort from stdout.
-    pub structured: Option<serde_json::Value>,
+    /// Optional adapter-specific transport metadata.
+    pub metadata: Option<serde_json::Value>,
 }
 
 /// An infrastructure failure running an agent — distinct from the agent producing a bad
@@ -120,9 +124,7 @@ impl SubprocessAdapter {
     }
 }
 
-/// Parse the agent's structured output: the last line of stdout that is a valid JSON value
-/// (agents may print logs before it). Best-effort — absence yields `None`.
-fn parse_structured(stdout: &str) -> Option<serde_json::Value> {
+fn parse_metadata(stdout: &str) -> Option<serde_json::Value> {
     stdout
         .lines()
         .rev()
@@ -136,17 +138,17 @@ impl AgentAdapter for SubprocessAdapter {
         let output = exec::run(
             &self.program,
             &self.args,
-            &request.workspace,
+            &request.working_dir,
             &request.env,
             &request.prompt,
             request.timeout,
         )?;
-        let structured = parse_structured(&output.stdout);
+        let metadata = parse_metadata(&output.stdout);
         Ok(AgentResponse {
             exit_code: output.exit_code,
             stdout: output.stdout,
             stderr: output.stderr,
-            structured,
+            metadata,
         })
     }
 }
@@ -169,9 +171,10 @@ mod tests {
 
     fn request() -> AgentRequest {
         AgentRequest {
-            role: AgentRole::Builder,
+            role: AgentRole::Respondent,
+            session_instruction: None,
             prompt: "do the thing".to_string(),
-            workspace: std::env::temp_dir(),
+            working_dir: std::env::temp_dir(),
             timeout: Duration::from_secs(5),
             env: HashMap::new(),
         }
@@ -189,8 +192,8 @@ mod tests {
         );
         let response = adapter(&script).run(request()).expect("runs");
         assert_eq!(response.exit_code, Some(0));
-        let structured = response.structured.expect("structured output parsed");
-        assert_eq!(structured["status"], "completed");
+        let metadata = response.metadata.expect("structured output parsed");
+        assert_eq!(metadata["status"], "completed");
     }
 
     #[test]
@@ -209,7 +212,7 @@ mod tests {
         let response = adapter(&script).run(request()).expect("runs");
         assert_eq!(response.exit_code, Some(0));
         assert!(
-            response.structured.is_none(),
+            response.metadata.is_none(),
             "no valid JSON -> no structured value"
         );
         assert!(response.stdout.contains("not json"));

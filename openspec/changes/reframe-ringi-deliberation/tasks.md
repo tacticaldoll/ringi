@@ -5,28 +5,28 @@
 
 ## 2. Dossier Domain
 
-- [ ] 2.1 Add human-readable dossier/frontmatter types with draft editing, preset resolution, submission-time locking, lifecycle states, and strict parse/round-trip tests; run the complete Definition of Done.
-- [ ] 2.2 Add immutable complete SSOT revisions, parent/content digests, public residuals, dissent resolution/reopen provenance, and structural rejection tests for unsupported removal; run the complete Definition of Done.
-- [ ] 2.3 Add append-only public and sealed event types plus context projections proving raw transcripts and sealed evaluator records never enter respondent prompts; run the complete Definition of Done.
+- [x] 2.1 Add human-readable dossier/frontmatter types with draft editing, preset resolution, submission-time locking, lifecycle states, and strict parse/round-trip tests; run the complete Definition of Done.
+- [x] 2.2 Add immutable complete SSOT revisions, parent/content digests, public residuals, dissent resolution/reopen provenance, and structural rejection tests for unsupported removal; run the complete Definition of Done.
+- [x] 2.3 Add append-only public and sealed event types plus context projections proving raw transcripts and sealed evaluator records never enter respondent prompts; run the complete Definition of Done.
 
 ## 3. Durable Store And Recovery
 
-- [ ] 3.1 Replace pre-release run tables with dossier, locked-settings, revision, event, dissent, condition, decision, and sealed-evaluation tables in the one SQLite store; prove reopen persistence and non-destructive initialization for dossier data, then run the complete Definition of Done.
-- [ ] 3.2 Commit provenance events and successor revisions atomically, reject broken parent/event references, and test interruption without orphan state; run the complete Definition of Done.
-- [ ] 3.3 Define stable invocation coordinates over dossier, role, input revision or condition snapshot, turn, and attempt; compose honest pacta/shaahid recovery or remove ceremonial composition, prove no duplicate CLI call after lost settlement, and run the complete Definition of Done.
+- [x] 3.1 Replace pre-release run tables with dossier, locked-settings, revision, event, dissent, condition, decision, and sealed-evaluation tables in the one SQLite store; prove reopen persistence and non-destructive initialization for dossier data, then run the complete Definition of Done.
+- [x] 3.2 Commit provenance events and successor revisions atomically, reject broken parent/event references, and test interruption without orphan state; run the complete Definition of Done.
+- [x] 3.3 Define stable invocation coordinates over dossier, role, input revision or condition snapshot, turn, and attempt; compose honest pacta/shaahid recovery or remove ceremonial composition, prove no duplicate CLI call after lost settlement, and run the complete Definition of Done.
 
 ## 4. Agent CLI Roles
 
-- [ ] 4.1 Narrow `AgentAdapter` to process outcome, natural-language stdout answer, stderr, session instruction, and optional transport metadata while preserving no-shell invocation, minimized environment, timeout, and portability tests; run the complete Definition of Done.
-- [ ] 4.2 Implement respondent prompt construction from only the original proposal, current public revision, and unresolved items; prove respondent answers are claims that cannot mutate the SSOT, then run the complete Definition of Done.
-- [ ] 4.3 Implement logically separate arbitration sessions that propose complete successor revisions with readiness and next-question output; reject malformed or structurally invalid proposals and run the complete Definition of Done.
-- [ ] 4.4 Implement isolated condition evaluators returning true/false/unknown plus sealed justification and provenance; prove their prompts, reasons, and verdict records never reach respondent or synthesis context, then run the complete Definition of Done.
+- [x] 4.1 Narrow `AgentAdapter` to process outcome, natural-language stdout answer, stderr, session instruction, and optional transport metadata while preserving no-shell invocation, minimized environment, timeout, and portability tests; run the complete Definition of Done.
+- [x] 4.2 Implement respondent prompt construction from only the original proposal, current public revision, and unresolved items; prove respondent answers are claims that cannot mutate the SSOT, then run the complete Definition of Done.
+- [x] 4.3 Implement logically separate arbitration sessions that propose complete successor revisions with readiness and next-question output; reject malformed or structurally invalid proposals and run the complete Definition of Done.
+- [x] 4.4 Implement isolated condition evaluators returning true/false/unknown plus sealed justification and provenance; prove their prompts, reasons, and verdict records never reach respondent or synthesis context, then run the complete Definition of Done.
 
 ## 5. Arbitration Strategies
 
-- [ ] 5.1 Implement closed, inspectable economy, balanced, and assurance preset resolution with advanced fixed fields, validation, and submission snapshots; run the complete Definition of Done.
-- [ ] 5.2 Implement persistent arbitration session reuse and fresh-session reconstruction from durable SSOT without making session memory authoritative; run the complete Definition of Done.
-- [ ] 5.3 Implement balanced trigger escalation and assurance fresh-session granularity with deterministic strategy traces and cost/session provenance; run the complete Definition of Done.
+- [x] 5.1 Implement closed, inspectable economy, balanced, and assurance preset resolution with advanced fixed fields, validation, and submission snapshots; run the complete Definition of Done.
+- [x] 5.2 Implement persistent arbitration session reuse and fresh-session reconstruction from durable SSOT without making session memory authoritative; run the complete Definition of Done.
+- [x] 5.3 Implement balanced trigger escalation and assurance fresh-session granularity with deterministic strategy traces and cost/session provenance; run the complete Definition of Done.
 
 ## 6. Synchronous Deliberation
 
