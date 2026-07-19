@@ -105,11 +105,26 @@ creation (ingress is backend/consumer territory, by pacta's design).
 
 ## Ringi forces family growth
 
-Ringi is the client that forces (and will help extract) the family's next surfaces:
-- the **retry cluster** (a retry `Middleware` + user `Policy` trait) over pacta's seam —
-  pacta left it deliberately unbuilt pending a client;
-- **Freigabe** (readiness/gating) from ringi's policy/approval mechanism;
-- later, **Dychwel** (compensation) and **Stoma** (circuit) from cancel/stop handling.
+Ringi is the client that forces (and will help extract) the family's next surfaces. The
+[round-model target](docs/round-model.md) audits how, and refines the picture: the disposition
+of what a brick surfaces is an **embeddable execution Layer** (the Tower shape), and pacta's
+`Middleware<E>` is the seed slot. That collapses what used to be planned as three separate
+bricks into **one Layer discipline (mechanism) plus a few edge-policies**:
+
+- the **retry cluster** (a retry Layer + user `Policy` trait) over pacta's seam — pacta left it
+  deliberately unbuilt pending a client; this is the **first Shape-A Layer** ringi forces out;
+- **Freigabe** (gate before execute), **Dychwel** (compensate on failure), **Stoma** (trip on
+  repeated failure) — **not three bricks, but three edge-policies on the one Layer discipline**;
+  each "wraps the execute." Force them out with real instances; do not pre-build.
+
+Red lines (from the target): no general Layer trait / central policy engine everything routes
+through (that is the central framework the vision forbids); and the fold over a brick's
+`surfaced`/`contradictions` (suunta coverage, shaahid drift) is **policy content — forever
+consumer `match`, never abstracted into a product**.
+
+Audit result on identity: the exactly-once unit is an **attempt** (`<run>:<target>:<round>:
+<attempt>`), which fits shaahid unchanged — **no family feedback needed** (the earlier "drift"
+worry was an artifact of choosing the wrong unit, and dissolved at the attempt grain).
 
 ## Open questions (with recommended defaults)
 
