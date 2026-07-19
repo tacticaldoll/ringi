@@ -11,10 +11,14 @@
 //!   when a claim is reclaimed after the work already succeeded.
 //!
 //! Everything ringi adds is the loop and the thin `seam` adapters (identity mapping,
-//! findings translation). Steps are stubs; there are no agents yet — the bet is about
-//! composition, not agents.
+//! findings translation). A step's actual work is delegated to a [`StepRunner`]: the loop acts
+//! only on the outcome it returns, never deciding success itself. The production runner
+//! ([`AgentStepRunner`]) runs a Builder agent; a scripted runner drives the composition bet.
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
+use std::time::Duration;
 
 use pacta::{Pact, Registry, Timestamp};
 use pacta_memory::MemoryRegistry;
@@ -23,6 +27,8 @@ use suunta::{
     Bearing, Correction, Fix, Reversibility, Satisfaction, SatisfactionFinding, Sigil, Sounding,
     plan_residual,
 };
+
+use crate::agent::{AgentAdapter, AgentRequest, AgentRole};
 
 const LEASE_MILLIS: u64 = 1_000;
 const BACKOFF_MILLIS: u64 = 500;
@@ -60,6 +66,93 @@ impl StepSpec {
         Self {
             id: id.into(),
             mode,
+        }
+    }
+}
+
+/// The result of running a step's work. The loop settles a `Succeeded` step and retries a
+/// `Failed` one; it never decides which itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StepOutcome {
+    /// The step's work completed.
+    Succeeded,
+    /// The step's work did not complete; the loop retries it via deferred reclaim.
+    Failed,
+}
+
+/// The seam by which the loop performs a step's actual work. This is ringi's own blood — the
+/// bricks own lifecycle, convergence, and idempotency; the runner owns only "do the work, did
+/// it succeed."
+pub trait StepRunner {
+    /// Perform `step`'s work and report whether it succeeded.
+    fn run(&self, step: &StepSpec) -> StepOutcome;
+}
+
+/// Runs a step's work by invoking a Builder agent through the agent seam. Depends only on the
+/// [`AgentAdapter`] trait, so any adapter can back it.
+#[derive(Debug, Clone)]
+pub struct AgentStepRunner<A> {
+    adapter: A,
+    workspace: PathBuf,
+    timeout: Duration,
+}
+
+impl<A: AgentAdapter> AgentStepRunner<A> {
+    /// A Builder runner over `adapter`, running each step in `workspace` bounded by `timeout`.
+    pub fn new(adapter: A, workspace: impl Into<PathBuf>, timeout: Duration) -> Self {
+        Self {
+            adapter,
+            workspace: workspace.into(),
+            timeout,
+        }
+    }
+}
+
+impl<A: AgentAdapter> StepRunner for AgentStepRunner<A> {
+    fn run(&self, step: &StepSpec) -> StepOutcome {
+        let request = AgentRequest {
+            role: AgentRole::Builder,
+            prompt: format!("Perform step: {}", step.id),
+            workspace: self.workspace.clone(),
+            timeout: self.timeout,
+            env: HashMap::new(),
+        };
+        // A clean exit is success; a non-zero exit, spawn failure, or timeout is a failure the
+        // loop retries. The runner computes no backoff — that is pacta's, loop-driven.
+        match self.adapter.run(request) {
+            Ok(response) if response.exit_code == Some(0) => StepOutcome::Succeeded,
+            _ => StepOutcome::Failed,
+        }
+    }
+}
+
+/// The scripted runner that drives the composition bet: a `FailsFirst` step fails its first
+/// attempt then succeeds; every other mode succeeds. Interior-mutable so the loop can hold it
+/// immutably while it tracks which steps have already failed once.
+struct ScriptedRunner {
+    failing_once: RefCell<HashSet<String>>,
+}
+
+impl ScriptedRunner {
+    fn from_modes(steps: &[StepSpec]) -> Self {
+        Self {
+            failing_once: RefCell::new(
+                steps
+                    .iter()
+                    .filter(|s| s.mode == StepMode::FailsFirst)
+                    .map(|s| s.id.clone())
+                    .collect(),
+            ),
+        }
+    }
+}
+
+impl StepRunner for ScriptedRunner {
+    fn run(&self, step: &StepSpec) -> StepOutcome {
+        if self.failing_once.borrow_mut().remove(&step.id) {
+            StepOutcome::Failed
+        } else {
+            StepOutcome::Succeeded
         }
     }
 }
@@ -115,17 +208,21 @@ mod seam {
     }
 }
 
-/// Reconcile `steps` to done over the reference in-memory backend. See [`run_with`].
+/// Reconcile `steps` to done over the reference in-memory backend, with the steps' modes
+/// scripted. See [`run_with`].
 #[must_use]
 pub fn run(steps: Vec<StepSpec>) -> Report {
     run_with(steps, MemoryRegistry::seeded)
 }
 
-/// Reconcile `steps` to done, composing the family over any backend built by `make`.
+/// Reconcile `steps` to done over any backend built by `make`, with the steps' modes scripted.
 ///
 /// `make(pacts, lease_millis)` returns a seeded [`Registry`] — the same constructor shape
 /// `pacta-conformance` uses — so the loop is backend-agnostic: the reference backend and a
-/// durable `SqliteRegistry` run the identical composition. Returns a [`Report`] to assert on.
+/// durable `SqliteRegistry` run the identical composition. This is the scripted composition
+/// bet: step outcomes come from a mode-derived runner and `LapsesAfterSuccess` injects a lost
+/// settlement. For a real injected runner (e.g. an agent), see [`run_with_runner`]. Returns a
+/// [`Report`] to assert on.
 ///
 /// # Panics
 ///
@@ -133,6 +230,46 @@ pub fn run(steps: Vec<StepSpec>) -> Report {
 /// (always a valid current holder or a fresh claim).
 #[must_use]
 pub fn run_with<R, F>(steps: Vec<StepSpec>, make: F) -> Report
+where
+    R: Registry,
+    R::Error: std::fmt::Debug,
+    F: FnOnce(Vec<Pact>, u64) -> R,
+{
+    let runner = ScriptedRunner::from_modes(&steps);
+    // The lapse is a durability fault (a lost settlement), not a runner outcome, so it stays
+    // loop-level: these steps drop their first settlement and are reclaimed.
+    let lapse_once: HashSet<String> = steps
+        .iter()
+        .filter(|s| s.mode == StepMode::LapsesAfterSuccess)
+        .map(|s| s.id.clone())
+        .collect();
+    run_core(steps, make, &runner, lapse_once)
+}
+
+/// Reconcile `steps` to done over any backend built by `make`, delegating each step's work to
+/// `runner` — the production entry point (no fault injection). Returns a [`Report`].
+///
+/// # Panics
+///
+/// Panics only if the registry returns an error, which it does not for the calls made here.
+#[must_use]
+pub fn run_with_runner<R, F>(steps: Vec<StepSpec>, make: F, runner: &dyn StepRunner) -> Report
+where
+    R: Registry,
+    R::Error: std::fmt::Debug,
+    F: FnOnce(Vec<Pact>, u64) -> R,
+{
+    run_core(steps, make, runner, HashSet::new())
+}
+
+/// The single loop body, parameterized over the registry backend, the step runner, and the
+/// (test-only) set of steps that lapse their first settlement.
+fn run_core<R, F>(
+    steps: Vec<StepSpec>,
+    make: F,
+    runner: &dyn StepRunner,
+    mut lapse_once: HashSet<String>,
+) -> Report
 where
     R: Registry,
     R::Error: std::fmt::Debug,
@@ -154,8 +291,6 @@ where
     let mut ledger: Vec<Deed<String>> = Vec::new(); // shaahid: steps whose work succeeded
     let mut done: HashSet<String> = HashSet::new(); // domain satisfaction
     let mut executions: HashMap<String, u32> = HashMap::new();
-    let mut failed_once: HashSet<String> = HashSet::new();
-    let mut lapsed_once: HashSet<String> = HashSet::new();
     let mut retried: HashSet<String> = HashSet::new();
     let mut deduplicated: HashSet<String> = HashSet::new();
 
@@ -219,10 +354,11 @@ where
                     done.insert(sigil.clone());
                     registry.fulfill(&claim.retainer).expect("fulfill");
                 }
-                Attestation::Create => match correction.body().mode {
-                    // Fail the first attempt: release with a backoff instant, record nothing.
-                    StepMode::FailsFirst if !failed_once.contains(&sigil) => {
-                        failed_once.insert(sigil.clone());
+                // Not yet performed: run the step's work and act only on its outcome.
+                Attestation::Create => match runner.run(correction.body()) {
+                    // Failed: release with a backoff instant, record nothing. The step is
+                    // withheld until the instant, then reclaimed and retried.
+                    StepOutcome::Failed => {
                         retried.insert(sigil.clone());
                         registry
                             .release(
@@ -231,20 +367,17 @@ where
                             )
                             .expect("release");
                     }
-                    // Succeed but "lose" the settlement once: record the deed and execute,
-                    // but do not fulfill or mark done, so the lease lapses and reclaims.
-                    StepMode::LapsesAfterSuccess if !lapsed_once.contains(&sigil) => {
-                        lapsed_once.insert(sigil.clone());
+                    // Succeeded: record the deed and count the execution. Normally settle and
+                    // mark done; if this step is injected to lapse once, drop the settlement
+                    // (do not fulfill or mark done) so the lease lapses and it is reclaimed —
+                    // shaahid then suppresses the re-execution (exactly-once).
+                    StepOutcome::Succeeded => {
                         *executions.entry(sigil.clone()).or_insert(0) += 1;
                         ledger.push(deed);
-                    }
-                    // Normal, or a retry, or any first-time success: perform once, record,
-                    // settle, and mark done.
-                    _ => {
-                        *executions.entry(sigil.clone()).or_insert(0) += 1;
-                        ledger.push(deed);
-                        done.insert(sigil.clone());
-                        registry.fulfill(&claim.retainer).expect("fulfill");
+                        if !lapse_once.remove(&sigil) {
+                            done.insert(sigil.clone());
+                            registry.fulfill(&claim.retainer).expect("fulfill");
+                        }
                     }
                 },
             }
@@ -326,5 +459,87 @@ mod tests {
         }
         assert!(report.retried.contains("step:fails-first"), "{report:?}");
         assert!(report.deduplicated.contains("step:lapses"), "{report:?}");
+    }
+
+    #[cfg(unix)]
+    mod agent {
+        use super::*;
+        use crate::agent::SubprocessAdapter;
+        use std::os::unix::fs::PermissionsExt;
+        use std::path::{Path, PathBuf};
+
+        // Write an executable fake-agent script into `dir` and return its path.
+        fn script_in(dir: &Path, name: &str, body: &str) -> PathBuf {
+            std::fs::create_dir_all(dir).unwrap();
+            let path = dir.join(name);
+            std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            path
+        }
+
+        fn workspace(tag: &str) -> PathBuf {
+            std::env::temp_dir().join(format!("ringi-recon-{}-{tag}", std::process::id()))
+        }
+
+        fn runner(script: &Path, workspace: PathBuf) -> AgentStepRunner<SubprocessAdapter> {
+            AgentStepRunner::new(
+                SubprocessAdapter::new(script.to_string_lossy().to_string(), Vec::new()),
+                workspace,
+                Duration::from_secs(5),
+            )
+        }
+
+        #[test]
+        fn a_builder_agent_step_converges() {
+            let ws = workspace("ok");
+            let script = script_in(&ws, "builder-ok.sh", "echo '{\"status\":\"done\"}'\nexit 0");
+            let report = run_with_runner(
+                vec![StepSpec::new("step:build", StepMode::Normal)],
+                MemoryRegistry::seeded,
+                &runner(&script, ws.clone()),
+            );
+
+            assert!(
+                report.converged,
+                "the agent-driven run must converge: {report:?}"
+            );
+            assert_eq!(
+                report.executions.get("step:build").copied(),
+                Some(1),
+                "the Builder step must execute exactly once: {report:?}"
+            );
+        }
+
+        #[test]
+        fn a_failing_builder_agent_retries_then_converges() {
+            let ws = workspace("flaky");
+            let marker = ws.join("attempted");
+            // A real non-zero exit on the first attempt drives the loop's deferred reclaim; the
+            // second attempt (marker present) exits clean.
+            let script = script_in(
+                &ws,
+                "builder-flaky.sh",
+                &format!(
+                    "if [ -e '{m}' ]; then exit 0; else touch '{m}'; exit 1; fi",
+                    m = marker.display()
+                ),
+            );
+            let report = run_with_runner(
+                vec![StepSpec::new("step:flaky", StepMode::Normal)],
+                MemoryRegistry::seeded,
+                &runner(&script, ws.clone()),
+            );
+
+            assert!(report.converged, "must converge after retrying: {report:?}");
+            assert!(
+                report.retried.contains("step:flaky"),
+                "a real non-zero exit must drive the retry: {report:?}"
+            );
+            assert_eq!(
+                report.executions.get("step:flaky").copied(),
+                Some(1),
+                "the step must execute exactly once (only the successful attempt): {report:?}"
+            );
+        }
     }
 }

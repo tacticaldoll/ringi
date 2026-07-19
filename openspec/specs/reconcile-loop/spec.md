@@ -67,3 +67,14 @@ cannot silently regress under the Definition of Done.
 #### Scenario: A regressed composition fails the gate
 - **WHEN** the loop no longer converges, double-executes a step, or mishandles retry
 - **THEN** the self-checking test fails under the Definition of Done
+
+### Requirement: Step Execution Is Delegated To A Runner Seam
+The loop SHALL delegate a claimed step's actual work to a `StepRunner` seam and act only on
+the outcome it returns — a success settles the step (record + fulfil), a failure retries it
+(release with a reclaimable instant). The loop SHALL NOT itself decide whether a step's work
+succeeded; that judgment belongs to the runner, keeping the loop pure composition. The
+production runner runs an agent; a scripted runner drives the self-checking composition test.
+
+#### Scenario: A step's outcome comes from its runner
+- **WHEN** the loop executes a claimed step
+- **THEN** it calls the runner, settles the step on a success outcome, and releases it for retry on a failure outcome, without judging the work itself
