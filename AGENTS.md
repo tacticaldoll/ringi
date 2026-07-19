@@ -67,26 +67,45 @@ openspec archive <name>
 - Write OpenSpec artifacts, ADRs, code comments, and commit messages in English.
 - Converse with users in the language they use.
 
-## Commits
+## Commit And Integration Governance
 
-Use Conventional Commits:
+### Branch Commits
 
-```text
-type(scope): summary
-```
+- Use Conventional Commits: `type(scope): summary`.
+- Write the subject in English, lowercase imperative mood, at no more than 72 characters.
+- Use the body to record motivation, important decisions, constraints, and verification when that context exists.
+- Do not append pull request or issue numbers to the subject or body.
+- Development branches may contain multiple coherent commits because the pull request is squash-merged.
 
-Use lowercase imperative mood and keep the summary at 72 characters or fewer.
-Common types: `feat`, `fix`, `docs`, `refactor`, `test`, `chore`, `build`,
-`ci`.
+### Pull Requests
 
-### Commit Flow
+- Branch from `main` and open every change directly against `main`.
+- Make the pull request title the intended squash commit subject.
+- Give every pull request a non-empty body that explains why the change is needed, what changed, consequential decisions or tradeoffs, and verification.
+- Rebase the branch onto the current `main` before final verification.
+- Do not introduce a release integration branch between a change and `main`.
 
-- **Propose**: `docs(<change>): propose <summary>`
-- **Apply**: `feat(<change>): <summary>` or `fix(<change>): <summary>`
-- **Sync**: `docs(specs): sync <change>`
-- **Archive**: `chore(openspec): archive <change>`
+### Squash Merges
 
-Never bundle unrelated changes into one commit.
+- Squash-merge every verified pull request into `main`.
+- Make the squash commit subject exactly the approved pull request title.
+- Give every squash commit a non-empty body distilled from the approved pull request body.
+- Do not append a pull request number, issue number, or URL to the squash subject or body.
+- Every content-changing commit on `main`, including release preparation, must come from a squash-merged pull request.
+- Keep `main` releasable after every merge.
+
+### Attribution
+
+- Do not include AI, agent, model, tool, automation, or generation attribution in commits, pull requests, tags, changelogs, or release notes.
+- A `Co-authored-by` trailer is allowed only for a real human contributor.
+
+### Release Finalization
+
+- Prepare release content in a pull request whose squash subject is exactly `chore(release): prepare X.Y.Z`.
+- Give the release preparation squash commit a non-empty body describing scope, compatibility, metadata changes, and verification.
+- Run the complete Definition of Done after that commit reaches `main`.
+- Finalize with annotated tag `vX.Y.Z` on that commit, with message exactly `release: X.Y.Z`.
+- Push the tag without another commit. Release branches and empty release commits are not part of the flow.
 
 ## Definition Of Done
 
