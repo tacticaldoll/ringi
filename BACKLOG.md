@@ -78,6 +78,12 @@ creation (ingress is backend/consumer territory, by pacta's design).
 
 1. **Local flow**: CLI, subprocess runner, Builder/Reviewer adapters, `git diff`,
    verification runner, in-memory reconcile loop.
+   - **Agent seam — landed.** `agent::AgentAdapter` + `SubprocessAdapter`: program+args
+     (never a shell), workspace cwd, minimized env, timeout-bounded (kill + `TimedOut`),
+     concurrent stdin/stdout/stderr, best-effort trailing-JSON parse; non-zero exit reported,
+     not raised. Fake-agent test covers success/non-zero/malformed/timeout.
+   - Still pending on this surface: Builder/Reviewer role wiring into the loop, `git diff`
+     capture, the verification runner, and the CLI beyond stubs.
 2. **Persistence**: `SqliteRegistry` over pacta's contract (conformance-proven) + ringi's
    domain tables; runs/steps/events/artifacts; resume.
    - **Registry half — landed.** `store::SqliteRegistry` implements `pacta::Registry` over
@@ -90,7 +96,10 @@ creation (ingress is backend/consumer territory, by pacta's design).
 3. **Policy & approval**: Action normalization, allow/ask/deny, workspace path guard, the
    approval CLI, action-hash binding, audit log.
 4. **Isolation & security**: git worktree, clean environment, secret redaction, output
-   limits, network restriction.
+   limits, network restriction. Includes **full process-tree teardown**: the timeout path
+   currently kills the direct child, which suffices for an agent invoked directly but leaks a
+   shell-wrapper agent's un-exec'd grandchildren (they can hold a pipe open); process-group
+   spawn + group-kill closes that gap and belongs with the rest of process isolation.
 5. **Productization**: multiple Agent CLI adapters, config validation, richer inspect,
    optional daemon / local HTTP.
 
