@@ -17,6 +17,8 @@ use rusqlite::types::Value;
 use rusqlite::{Connection, OptionalExtension, params, params_from_iter};
 use uuid::Uuid;
 
+use crate::reconcile::{Finding, Resume, RunJournal};
+
 /// The error a [`SqliteRegistry`] returns.
 #[derive(Debug)]
 pub enum StoreError {
@@ -128,11 +130,12 @@ impl SqliteRegistry {
         )?;
         conn.execute(
             "CREATE TABLE IF NOT EXISTS runs (
-                run_id    TEXT PRIMARY KEY,
-                task      TEXT NOT NULL,
-                workspace TEXT NOT NULL,
-                state     TEXT NOT NULL,
-                rounds    INTEGER NOT NULL DEFAULT 0
+                run_id     TEXT PRIMARY KEY,
+                task       TEXT NOT NULL,
+                workspace  TEXT NOT NULL,
+                state      TEXT NOT NULL,
+                rounds     INTEGER NOT NULL DEFAULT 0,
+                next_round INTEGER NOT NULL DEFAULT 0
             )",
             [],
         )?;
@@ -141,6 +144,17 @@ impl SqliteRegistry {
                 run_id     TEXT NOT NULL,
                 finding_id TEXT NOT NULL,
                 PRIMARY KEY (run_id, finding_id)
+            )",
+            [],
+        )?;
+        // The durable witness ledger: which rounds' build attempts have succeeded. A build Deed
+        // is determined by (run_id, round), so this is all that is needed to reconstruct the
+        // ledger on resume (see `RunStore::load_resume`).
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS deeds (
+                run_id TEXT NOT NULL,
+                round  INTEGER NOT NULL,
+                PRIMARY KEY (run_id, round)
             )",
             [],
         )?;
@@ -365,6 +379,10 @@ impl RunStore {
                 run_id
             ],
         )?;
+        // Replace any checkpointed findings with the terminal open set, so `findings` always
+        // reflects what is currently open (a converged run clears stale checkpoint findings).
+        self.conn
+            .execute("DELETE FROM findings WHERE run_id = ?", params![run_id])?;
         for id in open_findings {
             self.conn.execute(
                 "INSERT OR IGNORE INTO findings (run_id, finding_id) VALUES (?, ?)",
@@ -408,6 +426,118 @@ impl RunStore {
             rounds: usize::try_from(rounds).unwrap_or(0),
             open_findings,
         }))
+    }
+
+    /// A [`RunJournal`] handle bound to `run_id`, so the round loop can record its progress.
+    #[must_use]
+    pub fn journal(&self, run_id: &str) -> RunJournalHandle<'_> {
+        RunJournalHandle {
+            store: self,
+            run_id: run_id.to_string(),
+        }
+    }
+
+    /// Record that `round`'s build attempt succeeded (idempotent).
+    fn record_deed(&self, run_id: &str, round: usize) -> Result<(), StoreError> {
+        self.conn.execute(
+            "INSERT OR IGNORE INTO deeds (run_id, round) VALUES (?, ?)",
+            params![run_id, i64::try_from(round).unwrap_or(i64::MAX)],
+        )?;
+        Ok(())
+    }
+
+    /// Record a checkpoint: the next round to run and the currently-open findings (replacing the
+    /// prior open set, so `findings` always reflects what is open now).
+    fn set_checkpoint(
+        &self,
+        run_id: &str,
+        next_round: usize,
+        open_findings: &[String],
+    ) -> Result<(), StoreError> {
+        self.conn.execute(
+            "UPDATE runs SET next_round = ? WHERE run_id = ?",
+            params![i64::try_from(next_round).unwrap_or(i64::MAX), run_id],
+        )?;
+        self.conn
+            .execute("DELETE FROM findings WHERE run_id = ?", params![run_id])?;
+        for id in open_findings {
+            self.conn.execute(
+                "INSERT OR IGNORE INTO findings (run_id, finding_id) VALUES (?, ?)",
+                params![run_id, id],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Load a resume point for a still-running run: the next round, the succeeded rounds (to
+    /// rebuild the ledger), and the open findings. Returns `None` if the run is unknown or is
+    /// not in a resumable (still-running) state.
+    pub fn load_resume(&self, run_id: &str) -> Result<Option<Resume>, StoreError> {
+        let row = self
+            .conn
+            .query_row(
+                "SELECT state, next_round FROM runs WHERE run_id = ?",
+                params![run_id],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)),
+            )
+            .optional()?;
+        let Some((state, next_round)) = row else {
+            return Ok(None);
+        };
+        if RunState::parse(&state) != RunState::Running {
+            return Ok(None);
+        }
+
+        let mut deeds_stmt = self
+            .conn
+            .prepare("SELECT round FROM deeds WHERE run_id = ? ORDER BY round")?;
+        let built_rounds = deeds_stmt
+            .query_map(params![run_id], |r| r.get::<_, i64>(0))?
+            .map(|r| r.map(|v| usize::try_from(v).unwrap_or(0)))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let mut findings_stmt = self
+            .conn
+            .prepare("SELECT finding_id FROM findings WHERE run_id = ? ORDER BY finding_id")?;
+        // Only the finding id is persisted; the loop keys targets by id, so an empty summary is
+        // immaterial on resume.
+        let open_findings = findings_stmt
+            .query_map(params![run_id], |r| {
+                Ok(Finding {
+                    id: r.get::<_, String>(0)?,
+                    summary: String::new(),
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(Some(Resume {
+            start_round: usize::try_from(next_round).unwrap_or(0),
+            built_rounds,
+            open_findings,
+        }))
+    }
+}
+
+/// A [`RunJournal`] bound to one run, writing the round loop's progress into the durable store.
+/// Journalling failures are durability faults and surface as a panic — the run cannot claim to be
+/// resumable if its progress was not recorded.
+pub struct RunJournalHandle<'a> {
+    store: &'a RunStore,
+    run_id: String,
+}
+
+impl RunJournal for RunJournalHandle<'_> {
+    fn build_succeeded(&self, round: usize) {
+        self.store
+            .record_deed(&self.run_id, round)
+            .expect("journal a succeeded build");
+    }
+
+    fn checkpoint(&self, next_round: usize, open_findings: &[Finding]) {
+        let ids: Vec<String> = open_findings.iter().map(|f| f.id.clone()).collect();
+        self.store
+            .set_checkpoint(&self.run_id, next_round, &ids)
+            .expect("journal a checkpoint");
     }
 }
 
@@ -513,6 +643,60 @@ mod tests {
         assert!(
             store.get_run("nope").expect("query").is_none(),
             "an unknown run id is not found, never a fabricated record"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_checkpoint_and_deeds_reconstruct_a_resume_point() {
+        let path = temp_db("resume");
+        {
+            let store = RunStore::open(&path).expect("open");
+            store.create_run("run-r", "t", "/ws").expect("create");
+            let journal = store.journal("run-r");
+            journal.build_succeeded(0);
+            journal.checkpoint(
+                1,
+                &[Finding {
+                    id: "F1".to_string(),
+                    summary: "x".to_string(),
+                }],
+            );
+            journal.build_succeeded(1);
+            journal.checkpoint(
+                2,
+                &[Finding {
+                    id: "F1".to_string(),
+                    summary: "x".to_string(),
+                }],
+            );
+        }
+        // A fresh process reconstructs the resume point from the durable checkpoint + deeds.
+        let reopened = RunStore::open(&path).expect("reopen");
+        let resume = reopened
+            .load_resume("run-r")
+            .expect("query")
+            .expect("resumable");
+        assert_eq!(resume.start_round, 2);
+        assert_eq!(resume.built_rounds, vec![0, 1]);
+        assert_eq!(
+            resume
+                .open_findings
+                .iter()
+                .map(|f| f.id.clone())
+                .collect::<Vec<_>>(),
+            vec!["F1".to_string()]
+        );
+
+        // A finished run is not resumable; nor is an unknown id.
+        reopened.complete_run("run-r", true, 2, &[]).expect("done");
+        assert!(
+            reopened.load_resume("run-r").expect("query").is_none(),
+            "a finished run is not resumable"
+        );
+        assert!(
+            reopened.load_resume("nope").expect("query").is_none(),
+            "an unknown run is not resumable"
         );
         let _ = std::fs::remove_file(&path);
     }
