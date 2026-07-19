@@ -1,0 +1,17 @@
+[package]
+name = "ringi"
+description = "A local automation orchestrator that drives Agent CLIs through a durable, gated build-review-verify loop."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+pacta.workspace = true
+pacta-memory.workspace = true
+suunta.workspace = true
+shaahid.workspace = true
+uuid.workspace = true
+clap.workspace = true
+anyhow.workspace = true
