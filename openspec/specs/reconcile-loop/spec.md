@@ -78,3 +78,53 @@ production runner runs an agent; a scripted runner drives the self-checking comp
 #### Scenario: A step's outcome comes from its runner
 - **WHEN** the loop executes a claimed step
 - **THEN** it calls the runner, settles the step on a success outcome, and releases it for retry on a failure outcome, without judging the work itself
+
+### Requirement: The Loop Reconciles A Changing Bearing Of Goal Plus Findings
+The loop SHALL build its suunta `Bearing` each cycle from the current work set — the goal target
+`G` together with the open review findings, each finding a `Correction` with a stable `Sigil` —
+rather than from a fixed set decided once. A finding target SHALL be Unsatisfied until a
+re-review certifies it resolved, at which point it SHALL drop from the Bearing; a newly surfaced
+finding SHALL enter the Bearing. Convergence over this changing Bearing SHALL remain suunta's
+decision, with the loop adding no completion logic of its own.
+
+#### Scenario: A new finding enters the Bearing
+- **WHEN** a Reviewer surfaces a finding not previously seen
+- **THEN** the next cycle's Bearing includes that finding as an Unsatisfied target
+
+#### Scenario: A resolved finding leaves the Bearing
+- **WHEN** a re-review certifies a previously open finding resolved
+- **THEN** that finding target is Satisfied and no longer appears in the residual
+
+#### Scenario: The run converges on a clean review and a green goal
+- **WHEN** the goal is objectively verified and a review surfaces no open findings
+- **THEN** the residual is empty, nothing is surfaced, and suunta reports the run converged
+
+### Requirement: Two Certifiers Feed The Sounding
+Each cycle the loop SHALL assemble the `Sounding`'s `Fix` from two distinct certifiers: the goal
+target `G`'s satisfaction SHALL come only from the `Verification` verdict, and each finding
+target's satisfaction SHALL come only from a Reviewer re-review. The loop SHALL NOT satisfy `G`
+from the absence of findings, nor satisfy a finding from a verification verdict — the two axes
+stay separate.
+
+#### Scenario: The goal's satisfaction comes from Verify
+- **WHEN** the loop certifies the goal target for a cycle
+- **THEN** its satisfaction is the `Verification` verdict, never the Reviewer's output
+
+#### Scenario: A finding's satisfaction comes from re-review
+- **WHEN** the loop certifies a finding target for a cycle
+- **THEN** its satisfaction is a Reviewer re-review verdict, never the verification verdict
+
+### Requirement: The Exactly-Once Attempt Identity Is Distinct From The Target Identity
+The loop SHALL identify a suunta target by a stable `Sigil` and a shaahid attempt by a distinct
+`Seal` coordinate (`<run>:<target>:<round>:<attempt>`) with a `Fingerprint` over the attempt's
+input, rather than using one identity for both. A reclaim of the same attempt SHALL re-present
+the same `Seal` (witnessed as already performed), while a new round SHALL be a new coordinate and
+therefore new work. This mapping SHALL live only in the seam adapters.
+
+#### Scenario: A new round is new work
+- **WHEN** a target is addressed again in a later round
+- **THEN** the attempt carries a new `Seal` coordinate and shaahid witnesses it as a fresh attempt, not a duplicate
+
+#### Scenario: A reclaimed attempt is not re-performed
+- **WHEN** an attempt's settlement is lost and its claim is reclaimed within the same round
+- **THEN** shaahid re-presents the same `Seal` and the loop does not re-perform that attempt's side effect
