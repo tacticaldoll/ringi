@@ -2,9 +2,10 @@
 //!
 //! This is the sans-I/O seam made real: pacta owns the `Registry` *contract* (synchronous,
 //! clockless); ringi owns the *I/O* here. A backend is any type implementing the trait and
-//! validated by `pacta-conformance` — `SqliteRegistry` passes that suite, so it satisfies the
-//! contract by the same standard as the reference backend. It reimplements no lifecycle
-//! policy; it stores and honors the lease/lapse/reclaim state pacta defines.
+//! validated by `pacta-conformance` — `SqliteRegistry` passes its sequential and contention suites,
+//! so it satisfies the contract by the same standard as the reference backend. Its native claim
+//! query owns SQLite selection; one transactional `apply` port executes pacta's shared `lifecycle`
+//! decisions, so ringi reimplements no transition policy.
 //!
 //! `Registry` is a brick term used here at the seam (a backend implementation), per the
 //! naming worldview — not a term of ringi's own domain.
@@ -12,9 +13,10 @@
 use std::path::Path;
 use std::sync::Mutex;
 
-use pacta::{Claim, Pact, Registry, Retainer, Timestamp};
+use pacta::lifecycle::{self, State};
+use pacta::{Claim, Pact, Registry, Retainer, Timestamp, Transition};
 use rusqlite::types::Value;
-use rusqlite::{Connection, OptionalExtension, params, params_from_iter};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params, params_from_iter};
 use uuid::Uuid;
 
 use crate::reconcile::{Finding, Resume, RunJournal};
@@ -24,6 +26,10 @@ use crate::reconcile::{Finding, Resume, RunJournal};
 pub enum StoreError {
     /// The presented retainer is not the current holder (or the claim is not held).
     NotHeld,
+    /// Persisted lifecycle data cannot be represented by pacta's lifecycle model.
+    CorruptState(String),
+    /// A pacta timestamp cannot be represented exactly by SQLite's signed integer.
+    TimestampOutOfRange(u64),
     /// An underlying SQLite error.
     Sqlite(rusqlite::Error),
 }
@@ -32,6 +38,10 @@ impl std::fmt::Display for StoreError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::NotHeld => write!(f, "retainer is not the current holder of any claim"),
+            Self::CorruptState(message) => write!(f, "corrupt lifecycle state: {message}"),
+            Self::TimestampOutOfRange(millis) => {
+                write!(f, "timestamp {millis}ms is outside SQLite's exact range")
+            }
             Self::Sqlite(error) => write!(f, "sqlite error: {error}"),
         }
     }
@@ -41,6 +51,8 @@ impl std::error::Error for StoreError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::NotHeld => None,
+            Self::CorruptState(_) => None,
+            Self::TimestampOutOfRange(_) => None,
             Self::Sqlite(error) => Some(error),
         }
     }
@@ -49,6 +61,12 @@ impl std::error::Error for StoreError {
 impl From<rusqlite::Error> for StoreError {
     fn from(error: rusqlite::Error) -> Self {
         Self::Sqlite(error)
+    }
+}
+
+impl From<lifecycle::NotCurrentHolder> for StoreError {
+    fn from(_: lifecycle::NotCurrentHolder) -> Self {
+        Self::NotHeld
     }
 }
 
@@ -64,6 +82,7 @@ impl SqliteRegistry {
     /// state persists across reopen — this is where "the store is the source of truth" lives.
     pub fn open(path: impl AsRef<Path>, lease_millis: u64) -> Result<Self, StoreError> {
         let conn = Connection::open(path)?;
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
         Self::init(&conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
@@ -128,6 +147,14 @@ impl SqliteRegistry {
             )",
             [],
         )?;
+        // Pacta requires durable claim selection to be full-scan-free. This index begins with the
+        // requested docket and lifecycle state, then carries both time boundaries used by the
+        // native eligibility predicate. Existing databases gain it idempotently when opened.
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_pacts_claimable
+             ON pacts (docket, state, lease_expiry, reclaimable_at)",
+            [],
+        )?;
         conn.execute(
             "CREATE TABLE IF NOT EXISTS runs (
                 run_id     TEXT PRIMARY KEY,
@@ -160,19 +187,74 @@ impl SqliteRegistry {
         )?;
         Ok(())
     }
+
+    /// Persist pacta's model state into ringi's existing row representation. This maps fields only:
+    /// every lifecycle decision has already been made by pacta before this helper is called.
+    fn persist_state(conn: &Connection, pact_id: &str, state: &State) -> Result<(), StoreError> {
+        let changed = match state {
+            State::Available => conn.execute(
+                "UPDATE pacts SET state = 'available', retainer = NULL, lease_expiry = NULL,
+                                  reclaimable_at = NULL WHERE id = ?",
+                params![pact_id],
+            )?,
+            State::Held { retainer, expiry } => {
+                let expiry = millis(*expiry)?;
+                conn.execute(
+                    "UPDATE pacts SET state = 'held', retainer = ?, lease_expiry = ?,
+                                      reclaimable_at = NULL WHERE id = ?",
+                    params![retainer.id().to_string(), expiry, pact_id],
+                )?
+            }
+            State::Deferred { reclaimable_at } => {
+                let reclaimable_at = millis(*reclaimable_at)?;
+                conn.execute(
+                    "UPDATE pacts SET state = 'deferred', retainer = NULL, lease_expiry = NULL,
+                                      reclaimable_at = ? WHERE id = ?",
+                    params![reclaimable_at, pact_id],
+                )?
+            }
+            State::Settled => conn.execute(
+                "UPDATE pacts SET state = 'settled', retainer = NULL, lease_expiry = NULL,
+                                  reclaimable_at = NULL WHERE id = ?",
+                params![pact_id],
+            )?,
+        };
+        if changed != 1 {
+            return Err(StoreError::CorruptState(format!(
+                "expected one pact row for id {pact_id}, updated {changed}"
+            )));
+        }
+        Ok(())
+    }
+
+    fn held_state(retainer: &Retainer, lease_expiry: Option<i64>) -> Result<State, StoreError> {
+        let lease_expiry = lease_expiry
+            .ok_or_else(|| StoreError::CorruptState("held row has no lease_expiry".to_string()))?;
+        let lease_expiry = u64::try_from(lease_expiry).map_err(|_| {
+            StoreError::CorruptState(format!("held row has negative lease_expiry {lease_expiry}"))
+        })?;
+        Ok(State::Held {
+            retainer: retainer.clone(),
+            expiry: Timestamp::from_millis(lease_expiry),
+        })
+    }
 }
 
-fn millis(t: Timestamp) -> i64 {
-    // Timestamps are non-negative wall-clock offsets; the cast is lossless in range.
-    i64::try_from(t.as_millis()).unwrap_or(i64::MAX)
+fn millis(t: Timestamp) -> Result<i64, StoreError> {
+    i64::try_from(t.as_millis()).map_err(|_| StoreError::TimestampOutOfRange(t.as_millis()))
 }
 
 impl Registry for SqliteRegistry {
     type Error = StoreError;
 
     fn claim(&self, dockets: &[&str], now: Timestamp) -> Result<Option<Claim>, Self::Error> {
-        let conn = self.conn.lock().expect("registry mutex not poisoned");
-        let now_ms = millis(now);
+        if dockets.is_empty() {
+            return Ok(None);
+        }
+
+        let mut conn = self.conn.lock().expect("registry mutex not poisoned");
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let now_ms = millis(now)?;
 
         // Claimable: available, a lapsed hold, or a deferred pact whose instant has passed.
         let placeholders = vec!["?"; dockets.len()].join(",");
@@ -191,7 +273,7 @@ impl Registry for SqliteRegistry {
         args.push(Value::Integer(now_ms));
         args.push(Value::Integer(now_ms));
 
-        let row = conn
+        let row = tx
             .query_row(&sql, params_from_iter(args.iter()), |r| {
                 Ok((
                     r.get::<_, String>(0)?,
@@ -203,20 +285,24 @@ impl Registry for SqliteRegistry {
             .optional()?;
 
         let Some((id, docket, kind, clause)) = row else {
+            tx.commit()?;
             return Ok(None);
         };
 
+        let pact_id = Uuid::parse_str(&id).map_err(|error| {
+            StoreError::CorruptState(format!("pact {id} has an invalid UUID: {error}"))
+        })?;
         // Mint a fresh retainer only on a successful claim; the rotation is what makes a
-        // prior holder unable to settle after a reclaim.
+        // prior holder unable to settle after a reclaim. Pacta produces the held state.
         let retainer = Retainer::new(Uuid::new_v4());
-        let expiry = now.plus_millis(self.lease_millis);
-        conn.execute(
-            "UPDATE pacts SET state = 'held', retainer = ?, lease_expiry = ?, reclaimable_at = NULL
-             WHERE id = ?",
-            params![retainer.id().to_string(), millis(expiry), id],
-        )?;
+        let next = lifecycle::on_claim(&retainer, now, self.lease_millis);
+        let State::Held { expiry, .. } = &next else {
+            unreachable!("on_claim always produces held state")
+        };
+        let expiry = *expiry;
+        Self::persist_state(&tx, &id, &next)?;
+        tx.commit()?;
 
-        let pact_id = Uuid::parse_str(&id).map_err(|_| StoreError::NotHeld)?;
         Ok(Some(Claim::new(
             Pact::new(pact_id, docket, kind, clause),
             retainer,
@@ -224,61 +310,25 @@ impl Registry for SqliteRegistry {
         )))
     }
 
-    fn heartbeat(&self, retainer: &Retainer, now: Timestamp) -> Result<(), Self::Error> {
-        let conn = self.conn.lock().expect("registry mutex not poisoned");
-        let now_ms = millis(now);
-        // Refuse to revive a lapsed lease: require the lease still valid at `now`.
-        let changed = conn.execute(
-            "UPDATE pacts SET lease_expiry = ?
-             WHERE retainer = ? AND state = 'held' AND lease_expiry >= ?",
-            params![
-                millis(now.plus_millis(self.lease_millis)),
-                retainer.id().to_string(),
-                now_ms
-            ],
-        )?;
-        if changed == 0 {
-            return Err(StoreError::NotHeld);
-        }
-        Ok(())
+    fn lease_millis(&self) -> u64 {
+        self.lease_millis
     }
 
-    fn fulfill(&self, retainer: &Retainer) -> Result<(), Self::Error> {
-        self.settle(retainer)
-    }
-
-    fn breach(&self, retainer: &Retainer) -> Result<(), Self::Error> {
-        self.settle(retainer)
-    }
-
-    fn release(&self, retainer: &Retainer, reclaimable_at: Timestamp) -> Result<(), Self::Error> {
-        let conn = self.conn.lock().expect("registry mutex not poisoned");
-        let changed = conn.execute(
-            "UPDATE pacts SET state = 'deferred', retainer = NULL, lease_expiry = NULL,
-                              reclaimable_at = ?
-             WHERE retainer = ? AND state = 'held'",
-            params![millis(reclaimable_at), retainer.id().to_string()],
-        )?;
-        if changed == 0 {
-            return Err(StoreError::NotHeld);
-        }
-        Ok(())
-    }
-}
-
-impl SqliteRegistry {
-    // fulfill and breach share one terminal settlement; a stale retainer (rotated away by a
-    // reclaim) matches no held row, so it is rejected without needing time.
-    fn settle(&self, retainer: &Retainer) -> Result<(), StoreError> {
-        let conn = self.conn.lock().expect("registry mutex not poisoned");
-        let changed = conn.execute(
-            "UPDATE pacts SET state = 'settled', retainer = NULL, lease_expiry = NULL
-             WHERE retainer = ? AND state = 'held'",
-            params![retainer.id().to_string()],
-        )?;
-        if changed == 0 {
-            return Err(StoreError::NotHeld);
-        }
+    fn apply(&self, retainer: &Retainer, transition: &Transition<'_>) -> Result<(), Self::Error> {
+        let mut conn = self.conn.lock().expect("registry mutex not poisoned");
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let held = tx
+            .query_row(
+                "SELECT id, lease_expiry FROM pacts WHERE retainer = ? AND state = 'held' LIMIT 1",
+                params![retainer.id().to_string()],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<i64>>(1)?)),
+            )
+            .optional()?;
+        let (pact_id, lease_expiry) = held.ok_or(StoreError::NotHeld)?;
+        let current = Self::held_state(retainer, lease_expiry)?;
+        let next = transition(&current).map_err(StoreError::from)?;
+        Self::persist_state(&tx, &pact_id, &next)?;
+        tx.commit()?;
         Ok(())
     }
 }
@@ -548,6 +598,167 @@ mod tests {
     #[test]
     fn passes_registry_conformance() {
         pacta_conformance::run(SqliteRegistry::seeded);
+    }
+
+    #[test]
+    fn passes_registry_contention_conformance() {
+        pacta_conformance::run_contention(SqliteRegistry::seeded);
+    }
+
+    #[test]
+    fn independent_connections_issue_only_one_claim() {
+        let path = temp_db("cross-connection-claim");
+        let pact = Pact::new(Uuid::new_v4(), "d".into(), "step".into(), Vec::new());
+        let first = SqliteRegistry::open_seeded(&path, vec![pact], 1_000).expect("open and seed");
+        let second = SqliteRegistry::open(&path, 1_000).expect("open second connection");
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+
+        let a = {
+            let barrier = std::sync::Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                barrier.wait();
+                first.claim(&["d"], Timestamp::from_millis(0))
+            })
+        };
+        let b = {
+            let barrier = std::sync::Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                barrier.wait();
+                second.claim(&["d"], Timestamp::from_millis(0))
+            })
+        };
+
+        let claims = [
+            a.join().expect("first thread"),
+            b.join().expect("second thread"),
+        ]
+        .into_iter()
+        .flat_map(|result| result.expect("claim must not leak SQLite contention"))
+        .collect::<Vec<_>>();
+        assert_eq!(
+            claims.len(),
+            1,
+            "one SQLite transaction must win the single eligible pact"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn claim_query_uses_the_claimable_index() {
+        let registry = SqliteRegistry::seeded(Vec::new(), 1_000);
+        let conn = registry.conn.lock().expect("registry mutex not poisoned");
+        let mut statement = conn
+            .prepare(
+                "EXPLAIN QUERY PLAN
+                 SELECT id, docket, kind, clause FROM pacts
+                 WHERE docket IN (?)
+                   AND (state = 'available'
+                        OR (state = 'held' AND lease_expiry < ?)
+                        OR (state = 'deferred' AND reclaimable_at <= ?))
+                 LIMIT 1",
+            )
+            .expect("prepare query plan");
+        let details = statement
+            .query_map(params!["d", 0_i64, 0_i64], |row| row.get::<_, String>(3))
+            .expect("explain query")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("query-plan rows");
+        assert!(
+            details
+                .iter()
+                .any(|detail| detail.contains("USING INDEX idx_pacts_claimable")),
+            "claim selection must use its index, query plan: {details:?}"
+        );
+        assert!(
+            details.iter().all(|detail| !detail.contains("SCAN pacts")),
+            "claim selection must not scan the pact table, query plan: {details:?}"
+        );
+    }
+
+    #[test]
+    fn out_of_range_timestamp_is_rejected_without_claiming() {
+        let registry = SqliteRegistry::seeded(
+            vec![Pact::new(
+                Uuid::new_v4(),
+                "d".into(),
+                "step".into(),
+                Vec::new(),
+            )],
+            1_000,
+        );
+        let out_of_range = Timestamp::from_millis((i64::MAX as u64) + 1);
+        assert!(matches!(
+            registry.claim(&["d"], out_of_range),
+            Err(StoreError::TimestampOutOfRange(value)) if value == out_of_range.as_millis()
+        ));
+        assert!(
+            registry
+                .claim(&["d"], Timestamp::from_millis(0))
+                .expect("valid timestamp")
+                .is_some(),
+            "the rejected timestamp must leave the pact available"
+        );
+    }
+
+    #[test]
+    fn apply_rejects_a_stranger_even_when_the_transition_accepts_any_state() {
+        let registry = SqliteRegistry::seeded(
+            vec![Pact::new(
+                Uuid::new_v4(),
+                "d".into(),
+                "step".into(),
+                Vec::new(),
+            )],
+            1_000,
+        );
+        let claim = registry
+            .claim(&["d"], Timestamp::from_millis(0))
+            .expect("claim")
+            .expect("claimable");
+        let stranger = Retainer::new(Uuid::new_v4());
+        let accept_any = |_state: &State| Ok::<State, lifecycle::NotCurrentHolder>(State::Settled);
+
+        assert!(matches!(
+            registry.apply(&stranger, &accept_any),
+            Err(StoreError::NotHeld)
+        ));
+        registry
+            .fulfill(&claim.retainer)
+            .expect("stranger attempt must leave the holder's row unchanged");
+    }
+
+    #[test]
+    fn corrupt_held_state_is_not_reported_as_lost_authority() {
+        let registry = SqliteRegistry::seeded(
+            vec![Pact::new(
+                Uuid::new_v4(),
+                "d".into(),
+                "step".into(),
+                Vec::new(),
+            )],
+            1_000,
+        );
+        let claim = registry
+            .claim(&["d"], Timestamp::from_millis(0))
+            .expect("claim")
+            .expect("claimable");
+        registry
+            .conn
+            .lock()
+            .expect("registry mutex not poisoned")
+            .execute(
+                "UPDATE pacts SET lease_expiry = NULL WHERE retainer = ?",
+                params![claim.retainer.id().to_string()],
+            )
+            .expect("corrupt fixture");
+
+        let error = registry
+            .fulfill(&claim.retainer)
+            .expect_err("corrupt held row must fail");
+        assert!(
+            matches!(error, StoreError::CorruptState(_)),
+            "corrupt persisted data must not masquerade as NotHeld: {error}"
+        );
     }
 
     #[test]
