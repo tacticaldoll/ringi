@@ -7,5 +7,6 @@
 pub mod agent;
 pub mod exec;
 pub mod reconcile;
+pub mod run;
 pub mod store;
 pub mod verify;
