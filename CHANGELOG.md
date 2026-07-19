@@ -13,3 +13,11 @@ _0.1.0 is in development; it has not been released._
 - Project shape: the `ringi` app skeleton (a `clap` command surface, stubbed) and the
   self-driving foundation (`PROJECT.md`, `AGENTS.md`, `BACKLOG.md`, OpenSpec scaffolding).
   Behavior is built bet-first — first the minimal composition loop over the pacta family.
+
+### Changed
+
+- Upgrade pacta from 0.1.2 to 0.2.2 and migrate `SqliteRegistry` to the hardened backend-author
+  surface: native atomic claim, lease accessor, and one transactional `apply` port over pacta's
+  shared lifecycle decisions. The durable backend now passes sequential and contention conformance,
+  including an independent-connection claim fence, with only an additive claim-selection index —
+  no table or stored-row-format change — and no reconcile-loop behavior change.

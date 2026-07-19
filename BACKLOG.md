@@ -41,8 +41,9 @@ into the phases is now warranted.
 
 ## Family dependency stance
 
-- **pacta** is published (`0.1.2`, crates.io) — depend on it normally; it provides the
-  `Registry` contract, `release`, and `pacta-conformance`.
+- **pacta** is published (`0.2.2`, crates.io) — depend on it normally; it provides the
+  hardened `Registry` backend-author contract (`claim` + `lease_millis` + atomic `apply`),
+  shared `lifecycle` decisions, and sequential/contention conformance.
 - **suunta** and **shaahid** are unpublished (each at `release/0.1.0`, held pending this
   bet). Depend on them as **git dependencies** (`branch = "release/0.1.0"`) until they
   release, then switch to crates.io. This repo is what validates the bet that lets them ship.
@@ -51,9 +52,11 @@ into the phases is now warranted.
 
 Two cut-lines that must hold (see `PROJECT.md`):
 
-- **sans-I/O Registry seam.** pacta provides only the `Registry` trait (synchronous, zero
-  I/O) + `pacta-conformance`. Ringi implements its own `SqliteRegistry: pacta::Registry`
-  (sync, rusqlite) and proves it with the conformance suite. **One** user-scope SQLite DB
+- **sans-I/O Registry seam.** pacta provides the synchronous `Registry` contract, the colorless
+  `lifecycle` decisions, and `pacta-conformance`; it owns no storage I/O. Ringi implements its own
+  `SqliteRegistry: pacta::Registry` as a native atomic claim query plus one transactional `apply`
+  port, inheriting the four transition operations rather than reimplementing them, and proves it
+  with the sequential and contention suites. **One** user-scope SQLite DB
   holds both the Registry's lease/lifecycle state and ringi's domain tables
   (runs/steps/reviews/events/artifacts/approvals). Registry ops are sync and short (no
   transaction spans a subprocess); the slow async work (Agent CLI subprocess) is tokio, in
@@ -118,8 +121,9 @@ creation (ingress is backend/consumer territory, by pacta's design).
      re-sequencing.
 2. **Persistence**: `SqliteRegistry` over pacta's contract (conformance-proven) + ringi's
    domain tables; runs/steps/events/artifacts; resume.
-   - **Registry half — landed.** `store::SqliteRegistry` implements `pacta::Registry` over
-     rusqlite (sync, injected time) and **passes `pacta-conformance`** — the first external
+   - **Registry half — landed.** `store::SqliteRegistry` implements pacta 0.2.2's `Registry` over
+     rusqlite as native atomic `claim` + `lease_millis` + transactional `apply`, using pacta's
+     shared `lifecycle` decisions, and **passes sequential plus contention conformance** — the first external
      backend to do so, validating pacta's "durable backends live outside and prove
      themselves" claim. The reconcile loop is parameterized over the backend (`run_with`) and
      runs the identical composition durably; a reopen test proves state survives a restart.
