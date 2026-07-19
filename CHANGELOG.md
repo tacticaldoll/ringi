@@ -16,6 +16,9 @@ _0.1.0 is in development; it has not been released._
 
 ### Changed
 
+- Replace the suunta and shaahid `release/0.1.0` Git dependencies with their published 0.1.1
+  facade crates. Their public behavior is unchanged; the existing convergence, exactly-once,
+  reclaim, restart, and agent-backed composition tests remain the compatibility gate.
 - Upgrade pacta from 0.1.2 to 0.2.2 and migrate `SqliteRegistry` to the hardened backend-author
   surface: native atomic claim, lease accessor, and one transactional `apply` port over pacta's
   shared lifecycle decisions. The durable backend now passes sequential and contention conformance,

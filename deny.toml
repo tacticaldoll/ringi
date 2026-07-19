@@ -1,8 +1,7 @@
 # cargo-deny owns resolved supply-chain policy for the workspace.
 # Run: `cargo deny check`.
 #
-# When suunta/shaahid are added as git dependencies (see BACKLOG.md), allow their git
-# sources here (or move to crates.io once they release).
+# Family dependencies are published on crates.io; no Git source exception is required.
 
 [advisories]
 version = 2
@@ -19,7 +18,4 @@ multiple-versions = "warn"
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
-allow-git = [
-    "https://github.com/tacticaldoll/suunta",
-    "https://github.com/tacticaldoll/shaahid",
-]
+allow-git = []

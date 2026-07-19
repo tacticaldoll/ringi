@@ -44,9 +44,9 @@ into the phases is now warranted.
 - **pacta** is published (`0.2.2`, crates.io) — depend on it normally; it provides the
   hardened `Registry` backend-author contract (`claim` + `lease_millis` + atomic `apply`),
   shared `lifecycle` decisions, and sequential/contention conformance.
-- **suunta** and **shaahid** are unpublished (each at `release/0.1.0`, held pending this
-  bet). Depend on them as **git dependencies** (`branch = "release/0.1.0"`) until they
-  release, then switch to crates.io. This repo is what validates the bet that lets them ship.
+- **suunta** and **shaahid** are published (`0.1.1`, crates.io) — depend on their curated
+  facades normally. Their 0.1.1 releases make facade completeness structural without changing
+  public behavior; ringi continues to validate their convergence and idempotency composition.
 
 ## Seam design (from the boundary work)
 
