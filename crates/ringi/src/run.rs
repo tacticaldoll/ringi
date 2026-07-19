@@ -12,7 +12,9 @@ use std::time::Duration;
 use pacta::{Pact, Registry};
 
 use crate::agent::SubprocessAdapter;
-use crate::reconcile::{AgentReviewRunner, AgentRoundBuilder, RoundReport, run_rounds};
+use crate::reconcile::{
+    AgentReviewRunner, AgentRoundBuilder, Resume, RoundReport, RunJournal, run_rounds_journaled,
+};
 use crate::verify::{CommandVerification, VerifyCommand};
 
 /// Everything needed to assemble and drive one run. Plain data — the config **file format** and
@@ -46,6 +48,24 @@ where
     R::Error: std::fmt::Debug,
     F: FnOnce(Vec<Pact>, u64) -> R,
 {
+    run_from_config_journaled(config, make, &(), None)
+}
+
+/// As [`run_from_config`], but with a durable `journal` (recording progress) and an optional
+/// `resume` point (continuing an interrupted run). Assembly still neither persists nor presents —
+/// it forwards a journal the caller owns to the round loop; the caller's journal does the I/O.
+#[must_use]
+pub fn run_from_config_journaled<R, F>(
+    config: &RunConfig,
+    make: F,
+    journal: &dyn RunJournal,
+    resume: Option<Resume>,
+) -> RoundReport
+where
+    R: Registry,
+    R::Error: std::fmt::Debug,
+    F: FnOnce(Vec<Pact>, u64) -> R,
+{
     // One Agent CLI backs both roles; each seam sets its own role and prompt.
     let adapter = SubprocessAdapter::new(config.agent_program.clone(), config.agent_args.clone());
     let builder = AgentRoundBuilder::new(
@@ -57,7 +77,15 @@ where
     let reviewer = AgentReviewRunner::new(adapter, config.workspace.clone(), config.timeout);
     let verification =
         CommandVerification::new(config.verification.clone(), config.workspace.clone());
-    run_rounds(&config.run_id, &builder, &reviewer, &verification, make)
+    run_rounds_journaled(
+        &config.run_id,
+        &builder,
+        &reviewer,
+        &verification,
+        make,
+        journal,
+        resume,
+    )
 }
 
 #[cfg(all(test, unix))]
