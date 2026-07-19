@@ -128,3 +128,15 @@ therefore new work. This mapping SHALL live only in the seam adapters.
 #### Scenario: A reclaimed attempt is not re-performed
 - **WHEN** an attempt's settlement is lost and its claim is reclaimed within the same round
 - **THEN** shaahid re-presents the same `Seal` and the loop does not re-perform that attempt's side effect
+
+### Requirement: The Round Loop Runs End-To-End Under Agent-Backed Roles
+The round loop SHALL be drivable end to end by production, agent-backed Build and Review roles —
+not only scripted ones — together with an objective `Verification`, converging as suunta decides.
+The Build and Review roles SHALL be supplied through their seams (`RoundBuilder` and
+`ReviewRunner`), so the loop depends on no specific agent CLI and each role can be scripted or
+agent-backed independently. The goal's satisfaction SHALL remain the `Verification` verdict and
+convergence SHALL remain suunta's, regardless of which role implementations are supplied.
+
+#### Scenario: An agent-backed round loop converges
+- **WHEN** the round loop is driven by an agent-backed Builder and an agent-backed Reviewer with a verification that passes
+- **THEN** the loop converges as suunta decides, having built each round exactly once and honored the Verification verdict as the goal's satisfaction

@@ -28,7 +28,7 @@ use suunta::{
     plan_residual,
 };
 
-use crate::agent::{AgentAdapter, AgentRequest, AgentRole};
+use crate::agent::{AgentAdapter, AgentError, AgentRequest, AgentResponse, AgentRole};
 
 const LEASE_MILLIS: u64 = 1_000;
 const BACKOFF_MILLIS: u64 = 500;
@@ -108,6 +108,18 @@ impl<A: AgentAdapter> AgentStepRunner<A> {
     }
 }
 
+/// Map an agent invocation result to a [`StepOutcome`]: a clean exit (a zero exit code) is
+/// success; any other result — a non-zero exit, a spawn failure, or a timeout — is a failure the
+/// loop retries. The caller computes no backoff — that is pacta's, loop-driven. Shared by the
+/// per-step [`AgentStepRunner`] and the per-round [`AgentRoundBuilder`], which are distinct role
+/// seams that nonetheless read an agent's result the same way.
+fn outcome_of(result: Result<AgentResponse, AgentError>) -> StepOutcome {
+    match result {
+        Ok(response) if response.exit_code == Some(0) => StepOutcome::Succeeded,
+        _ => StepOutcome::Failed,
+    }
+}
+
 impl<A: AgentAdapter> StepRunner for AgentStepRunner<A> {
     fn run(&self, step: &StepSpec) -> StepOutcome {
         let request = AgentRequest {
@@ -117,12 +129,7 @@ impl<A: AgentAdapter> StepRunner for AgentStepRunner<A> {
             timeout: self.timeout,
             env: HashMap::new(),
         };
-        // A clean exit is success; a non-zero exit, spawn failure, or timeout is a failure the
-        // loop retries. The runner computes no backoff — that is pacta's, loop-driven.
-        match self.adapter.run(request) {
-            Ok(response) if response.exit_code == Some(0) => StepOutcome::Succeeded,
-            _ => StepOutcome::Failed,
-        }
+        outcome_of(self.adapter.run(request))
     }
 }
 
@@ -221,6 +228,43 @@ pub trait ReviewRunner {
 pub trait RoundBuilder {
     /// Perform `round`'s build work and report whether the attempt succeeded.
     fn build(&self, round: usize) -> StepOutcome;
+}
+
+/// Performs a round's build work by running a Builder agent through the agent seam. The round-loop
+/// counterpart to [`AgentStepRunner`] — a distinct role seam (`RoundBuilder`, not `StepRunner`),
+/// never one composable trait. Depends only on the [`AgentAdapter`], so any adapter backs it.
+#[derive(Debug, Clone)]
+pub struct AgentRoundBuilder<A> {
+    adapter: A,
+    workspace: PathBuf,
+    timeout: Duration,
+}
+
+impl<A: AgentAdapter> AgentRoundBuilder<A> {
+    /// A Builder round runner over `adapter`, building each round in `workspace` bounded by
+    /// `timeout`.
+    pub fn new(adapter: A, workspace: impl Into<PathBuf>, timeout: Duration) -> Self {
+        Self {
+            adapter,
+            workspace: workspace.into(),
+            timeout,
+        }
+    }
+}
+
+impl<A: AgentAdapter> RoundBuilder for AgentRoundBuilder<A> {
+    fn build(&self, round: usize) -> StepOutcome {
+        let request = AgentRequest {
+            role: AgentRole::Builder,
+            prompt: format!("Perform build for round {round}."),
+            workspace: self.workspace.clone(),
+            timeout: self.timeout,
+            env: HashMap::new(),
+        };
+        // A clean exit is a successful build; anything else is a failed attempt the loop retries
+        // via deferred reclaim. No backoff here — that is pacta's, driven by the loop.
+        outcome_of(self.adapter.run(request))
+    }
 }
 
 /// A read-only Reviewer backed by an [`AgentAdapter`]: it runs a Reviewer agent and parses the
@@ -1148,6 +1192,62 @@ mod tests {
             assert!(
                 review_runner(&script, ws.clone()).review(0).is_empty(),
                 "an empty findings array is a clean review"
+            );
+        }
+
+        fn round_builder(
+            script: &Path,
+            workspace: PathBuf,
+        ) -> AgentRoundBuilder<SubprocessAdapter> {
+            AgentRoundBuilder::new(
+                SubprocessAdapter::new(script.to_string_lossy().to_string(), Vec::new()),
+                workspace,
+                Duration::from_secs(5),
+            )
+        }
+
+        #[test]
+        fn the_round_loop_converges_under_agent_backed_builder_and_reviewer() {
+            // End to end under real agents: a Builder agent that always exits clean, and a
+            // Reviewer agent that surfaces F1 on its first review then none thereafter (a marker
+            // in the shared workspace). Verify is a scripted green, so the test isolates the two
+            // *agent* roles being wired into the loop.
+            let ws = workspace("rounds-e2e");
+            let builder = script_in(
+                &ws,
+                "round-builder.sh",
+                "echo '{\"status\":\"built\"}'\nexit 0",
+            );
+            let reviewer = script_in(
+                &ws,
+                "round-reviewer.sh",
+                "if [ -e reviewed ]; then echo '{\"findings\":[]}'; else touch reviewed; \
+                 echo '{\"findings\":[{\"id\":\"F1\",\"summary\":\"fix\"}]}'; fi\nexit 0",
+            );
+
+            let report = run_rounds(
+                "run-agent-e2e",
+                &round_builder(&builder, ws.clone()),
+                &review_runner(&reviewer, ws.clone()),
+                &ScriptVerify { pass_from: 0 },
+                MemoryRegistry::seeded,
+            );
+
+            assert!(
+                report.converged,
+                "the agent-backed round loop must converge: {report:?}"
+            );
+            // Goal green from round 0; F1 surfaces round 0 then resolves round 1 -> converge.
+            for r in 0..report.rounds {
+                assert_eq!(
+                    report.build_executions.get(&r).copied(),
+                    Some(1),
+                    "each round built exactly once: {report:?}"
+                );
+            }
+            assert!(
+                report.open_findings.is_empty(),
+                "findings must resolve: {report:?}"
             );
         }
     }
