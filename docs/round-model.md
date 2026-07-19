@@ -1,9 +1,10 @@
-# Round Model — Vision-Aligned Target (Fidelity Audit)
+# Round Model — Historical Execution Target
 
-**Status**: target, not a change. This is the shape every round-model / policy increment steps
-toward, so alignment is a matter of *seam placement and shape*, never of pre-building. Read it
-before opening a change in this area; each increment must be the smallest step toward this
-target.
+**Status**: historical record, not current product direction. It documents the code-execution
+model that proved the family-composition bet. The active `reframe-ringi-deliberation` change makes
+one dossier deliberation the product boundary; it does not execute workspaces, apply patches, or
+introduce async/in-flight coverage. Do not use this document to justify new product work without a
+new OpenSpec change that re-evaluates the deliberation contract.
 
 **The paradox it resolves**: the vision itself forbids "aligning early" by building the general
 product (force-then-extract, no central framework, don't pre-build). So *aligning with the
