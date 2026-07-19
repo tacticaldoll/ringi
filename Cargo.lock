@@ -496,16 +496,18 @@ checksum = "bbfa15b3dddfee50a0fff136974b3e1bde555604ba463834a7eb7deb6417705d"
 
 [[package]]
 name = "shaahid"
-version = "0.1.0"
-source = "git+https://github.com/tacticaldoll/shaahid?branch=release%2F0.1.0#8d2143edd69b2a690349bf7a6ed6e3caec0492bb"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "74ab5949ba5aecfd5bc5902b7a24c6a4235555523837147eec48904d5a418a08"
 dependencies = [
  "shaahid-contract",
 ]
 
 [[package]]
 name = "shaahid-contract"
-version = "0.1.0"
-source = "git+https://github.com/tacticaldoll/shaahid?branch=release%2F0.1.0#8d2143edd69b2a690349bf7a6ed6e3caec0492bb"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2b084de5b7879231a44ece4ad9d6edef18e9e83d8aa687f5d49a01b02ee00263"
 
 [[package]]
 name = "shlex"
@@ -533,16 +535,18 @@ checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
 
 [[package]]
 name = "suunta"
-version = "0.1.0"
-source = "git+https://github.com/tacticaldoll/suunta?branch=release%2F0.1.0#27d5098069fedf829d064561b66b2b07cf29a999"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d5155fbb427c4bedb9b5fb4c4767b8361ed009425845772da53e097e854e765d"
 dependencies = [
  "suunta-contract",
 ]
 
 [[package]]
 name = "suunta-contract"
-version = "0.1.0"
-source = "git+https://github.com/tacticaldoll/suunta?branch=release%2F0.1.0#27d5098069fedf829d064561b66b2b07cf29a999"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "134b8657ea862b66d6e996eaf0be2242d390b6995f4fd714e6801669f79fb795"
 
 [[package]]
 name = "syn"

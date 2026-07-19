@@ -10,16 +10,14 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/tacticaldoll/ringi"
 
 [workspace.dependencies]
-# The lifecycle authority ringi composes over (published). Suunta (convergence) and
-# Shaahid (idempotency) are added when the composition loop lands — they are unpublished
-# family members, so they arrive as git dependencies until they release.
+# Published family facades composed by ringi: pacta owns lifecycle, suunta owns convergence,
+# and shaahid owns idempotency.
 pacta = "0.2.2"
 pacta-memory = "0.2.2"
 pacta-conformance = "0.2.2"
 rusqlite = { version = "0.32", features = ["bundled"] }
-# Unpublished family members — git deps at release/0.1.0 until they release, then crates.io.
-suunta = { git = "https://github.com/tacticaldoll/suunta", branch = "release/0.1.0" }
-shaahid = { git = "https://github.com/tacticaldoll/shaahid", branch = "release/0.1.0" }
+suunta = "0.1.1"
+shaahid = "0.1.1"
 uuid = { version = "1", features = ["v5"] }
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
