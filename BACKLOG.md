@@ -61,9 +61,11 @@ Two cut-lines that must hold (see `PROJECT.md`):
   reference `Driver` for the async steps — drive the `Registry` contract from a
   consumer-owned async loop (pacta permits this).
 - **core-mechanism / edge-policy.** Policy/approval starts as ringi consumer code
-  (allow/ask/deny + an approval gate). Only the gating *mechanism* might later extract into a
-  Freigabe brick; the policy *content* (which actions deny) is forever ringi's. Do not
-  pre-build Freigabe — force-then-extract.
+  (allow/ask/deny + an approval gate). Only the gating *mechanism* might later extract into its
+  own **authorization-gate** brick — an *authorization* concern (is this action permitted to
+  run?), distinct from *dependency-readiness* (are prerequisites ready?), which ringi does not
+  exercise. The policy *content* (which actions deny) is forever ringi's. Do not pre-build it —
+  force-then-extract.
 
 Interlocks proven at the type level: suunta `Sigil` == shaahid `Seal` (one domain identity);
 pacta outcome -> suunta next-cycle finding (`Fulfilled`->satisfied, `Breached`->unsatisfied,
@@ -142,10 +144,21 @@ of what a brick surfaces is an **embeddable execution Layer** (the Tower shape),
 bricks into **one Layer discipline (mechanism) plus a few edge-policies**:
 
 - the **retry cluster** (a retry Layer + user `Policy` trait) over pacta's seam — pacta left it
-  deliberately unbuilt pending a client; this is the **first Shape-A Layer** ringi forces out;
-- **Freigabe** (gate before execute), **Dychwel** (compensate on failure), **Stoma** (trip on
-  repeated failure) — **not three bricks, but three edge-policies on the one Layer discipline**;
-  each "wraps the execute." Force them out with real instances; do not pre-build.
+  deliberately unbuilt pending a client; this is the **first Shape-A Layer** ringi forces out.
+  Ringi already has a *primitive* instance (a fixed backoff in the round loop); the Layer is not
+  forced until a **second, differing policy** appears;
+- an **authorization gate** (gate before execute — allow/ask/deny + human approval), the edge-
+  policy ringi forces **most** and next (phase 3), because it is how the "model has no execution
+  authority" invariant is enforced. This is an *authorization* concern, **not** dependency-
+  readiness (ringi has no real inter-action readiness structure — the store's lease handles that);
+- **compensation** (undo on failure) and a **circuit-break** (trip on repeated failure) — ringi
+  only has crude proxies today (whole-worktree discard; the `MAX_ROUNDS` bound), so it does **not
+  yet** force either; keep them unbuilt until a real instance forces the shape.
+
+These are edge-policies on **one Layer discipline** ("wrap the execute"), not separate engines.
+Ringi names the *functional* concerns it forces; whether any becomes a named family brick is a
+force-then-extract decision at the family boundary, **not ringi's to assert** — so ringi's own
+docs stay in its own vocabulary and do not presume sibling brand names.
 
 Red lines (from the target): no general Layer trait / central policy engine everything routes
 through (that is the central framework the vision forbids); and the fold over a brick's

@@ -113,11 +113,11 @@ of them is a product-shaped thing:
 ```
   Shape A — execution Layer (wraps the act of executing)     ← the Tower middleware we wanted
       Executor (bare work)
-        ⊃ Retry      (pacta breach → retry per Policy)
-        ⊃ Approval   (Freigabe: gate before execute)
-        ⊃ Circuit    (Stoma: trip on repeated failure)
-        ⊃ Compensate (Dychwel: undo on failure)
-        ⊃ Idempotency(shaahid: skip if witnessed)
+        ⊃ Retry         (pacta breach → retry per Policy)
+        ⊃ Authorization (gate before execute: allow/ask/deny + approval)
+        ⊃ Circuit       (trip on repeated failure)
+        ⊃ Compensate    (undo on failure)
+        ⊃ Idempotency   (shaahid: skip if witnessed)
       → composable, reorderable, one concern each; pacta's Middleware<E> is the seed slot
 
   Shape B — disposition fold (decide over a list of surfaced findings)
@@ -127,12 +127,15 @@ of them is a product-shaped thing:
         Do NOT abstract it into a product.
 ```
 
-**Vision refinement (record, do not build).** Shape A collapses the family's three planned
-future bricks — **Freigabe (gate), Dychwel (compensate), Stoma (circuit)** — into **one Layer
-discipline + three edge-policies**. They are all "wrap the execute." So the family's future is
-not "three more bricks"; it is "one middleware pattern (mechanism) + a few policies (edge)."
-Fewer, thinner, more aligned. This is the good kind of alignment: *seeing clearly so we build
-less.*
+**Vision refinement (record, do not build).** Shape A collapses ringi's future execution-Layer
+concerns — an **authorization gate**, **compensation**, and a **circuit-break** — into **one Layer
+discipline + a few edge-policies**. They are all "wrap the execute." So the future is not "three
+more bricks"; it is "one middleware pattern (mechanism) + a few policies (edge)." Fewer, thinner,
+more aligned: *seeing clearly so we build less.* Ringi names these **functional** concerns in its
+own vocabulary; whether any becomes a named family brick is a force-then-extract call at the family
+boundary, not ringi's to assert — so this doc does not presume sibling brand names. (Note the
+authorization gate is an *authorization* concern — is this action permitted? — **distinct from
+dependency-readiness**, which ringi has no real structure for and does not force.)
 
 **Aligned shape for the first Layer.** When it is forced, the first Layer:
 - sits on pacta's `Executor`/`Middleware<E>` seam (retry — the most-forced by a real client);
@@ -146,7 +149,8 @@ less.*
   surfaced streams route through. That is the central framework the vision forbids (mirrorlane
   redux).
 - ❌ Do not abstract Shape B. It is policy content and stays consumer `match`.
-- ❌ Do not build Freigabe/Dychwel/Stoma. Force them out with real instances first.
+- ❌ Do not build the authorization-gate / compensation / circuit-break Layers. Force them out
+  with real instances first.
 
 ---
 
@@ -187,10 +191,16 @@ a rich model to grow inside ringi.
 
 - **Feedback to the family: none for identity.** The attempt-grain fits shaahid unchanged; the
   earlier "drift" worry dissolved. (Recorded so we do not re-raise it.)
-- **Vision refinement:** Freigabe / Dychwel / Stoma are **Layer edge-policies on one middleware
-  discipline**, not three separate bricks. Update the "ringi forces family growth" section.
+- **Vision refinement:** the authorization gate, compensation, and circuit-break are **Layer
+  edge-policies on one middleware discipline**, not three separate bricks. Named functionally, in
+  ringi's own vocabulary — brand assignment is the family's, force-then-extract.
+- **Forced-shape finding:** ringi's real need is an **authorization** gate (allow/ask/deny +
+  approval, enforcing "the model has no execution authority") — **distinct from dependency-
+  readiness**, which ringi has no structure for and does not force. So ringi is the anchor for the
+  authorization concern, not for a readiness gate.
 - **The retry cluster** (retry Layer + consumer Policy) remains the first Shape-A instance ringi
-  is expected to force out over pacta's seam.
+  is expected to force out over pacta's seam; ringi's fixed-backoff primitive does not yet force
+  the Layer (a second, differing policy will).
 
 ---
 
