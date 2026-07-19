@@ -6,19 +6,18 @@
 //! it composes rather than reimplements: durable step lifecycle (pacta), convergence to
 //! done (suunta), and exactly-once step idempotency (shaahid). See `PROJECT.md`.
 //!
-//! This binary is the command surface. `run` and `init` are wired; the remaining commands
-//! land in later phases (see `BACKLOG.md`) and are still stubbed.
+//! This binary is the command surface. `init`, `run`, and `status` are wired; the remaining
+//! commands land in later phases (see `BACKLOG.md`) and are still stubbed.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::{Context, bail};
 use clap::{Parser, Subcommand};
-use pacta_memory::MemoryRegistry;
 
 use ringi::config;
-use ringi::reconcile::RoundReport;
-use ringi::run::{self, RunConfig};
+use ringi::run;
+use ringi::store::{RunRecord, RunState, RunStore, SqliteRegistry};
 
 /// The ringi orchestrator command line.
 #[derive(Debug, Parser)]
@@ -61,8 +60,8 @@ fn main() -> anyhow::Result<ExitCode> {
     match Cli::parse().command {
         Command::Init => init_command().map(|()| ExitCode::SUCCESS),
         Command::Run { workspace, task } => run_command(&workspace, &task),
-        Command::Status { .. }
-        | Command::Inspect { .. }
+        Command::Status { run_id } => status_command(&run_id),
+        Command::Inspect { .. }
         | Command::Resume { .. }
         | Command::Cancel { .. }
         | Command::Approvals
@@ -73,30 +72,75 @@ fn main() -> anyhow::Result<ExitCode> {
     }
 }
 
-/// Write the default config, refusing to clobber an existing one.
+/// The one user-scope SQLite store: the Registry's lease state and ringi's domain tables together.
+fn store_path() -> PathBuf {
+    Path::new(".ringi").join("state.sqlite")
+}
+
+/// Ensure the store directory exists and open (provisioning the schema) the durable store.
+fn open_store() -> anyhow::Result<RunStore> {
+    let path = store_path();
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    }
+    let store =
+        RunStore::open(&path).with_context(|| format!("opening store {}", path.display()))?;
+    Ok(store)
+}
+
+/// Provision the durable store and scaffold the config, neither destroying existing data.
 fn init_command() -> anyhow::Result<()> {
+    open_store()?;
+    println!("Provisioned the run store at {}.", store_path().display());
+
     let path = Path::new(config::CONFIG_FILE);
     if path.exists() {
         println!("{} already exists; leaving it unchanged.", path.display());
-        return Ok(());
+    } else {
+        std::fs::write(path, config::DEFAULT_CONFIG)
+            .with_context(|| format!("writing {}", path.display()))?;
+        println!(
+            "Wrote {}. Edit the [agent] program and [[verification]] commands, then run:\n  ringi run --workspace <path> --task \"<what to do>\"",
+            path.display()
+        );
     }
-    std::fs::write(path, config::DEFAULT_CONFIG)
-        .with_context(|| format!("writing {}", path.display()))?;
-    println!(
-        "Wrote {}. Edit the [agent] program and [[verification]] commands, then run:\n  ringi run --workspace <path> --task \"<what to do>\"",
-        path.display()
-    );
     Ok(())
 }
 
-/// Load the config, drive the run over the in-memory backend, present the outcome, and map
-/// convergence to the exit status. The registry backend is in-memory for now; because
-/// [`run::run_from_config`] is backend-agnostic, a durable backend swaps in here in a later phase.
+/// Load the config, record the run, drive it over the durable store, record the outcome, and
+/// present the persisted record. Recording lives here in the driver layer — `run_from_config`
+/// itself neither persists nor presents (see the `run-assembly` capability).
 fn run_command(workspace: &str, task: &str) -> anyhow::Result<ExitCode> {
     let file = config::load(Path::new(config::CONFIG_FILE))?;
     let config = file.into_run_config(PathBuf::from(workspace), task.to_string());
-    let report = run::run_from_config(&config, MemoryRegistry::seeded);
-    print!("{}", present(&config, &report));
+
+    let store = open_store()?;
+    store
+        .create_run(&config.run_id, &config.task, workspace)
+        .with_context(|| "recording the run")?;
+
+    // The registry backend is the durable store; `run_from_config`'s `make` cannot return a
+    // Result, but `open_store` above already proved the file is openable, so this is an invariant.
+    let db = store_path();
+    let report = run::run_from_config(&config, move |pacts, lease| {
+        SqliteRegistry::open_seeded(&db, pacts, lease)
+            .expect("durable registry opens over the provisioned store")
+    });
+
+    store
+        .complete_run(
+            &config.run_id,
+            report.converged,
+            report.rounds,
+            &report.open_findings,
+        )
+        .with_context(|| "recording the run outcome")?;
+
+    let record = store
+        .get_run(&config.run_id)
+        .with_context(|| "reading back the recorded run")?
+        .expect("the run was just recorded");
+    print!("{}", present(&record));
     Ok(if report.converged {
         ExitCode::SUCCESS
     } else {
@@ -104,31 +148,41 @@ fn run_command(workspace: &str, task: &str) -> anyhow::Result<ExitCode> {
     })
 }
 
-/// Render a run's outcome for the terminal: identity, convergence, rounds, and any open findings.
-fn present(config: &RunConfig, report: &RoundReport) -> String {
-    let mut out = String::new();
-    out.push_str(&format!("run {}\n", config.run_id));
-    out.push_str(&format!("  workspace: {}\n", config.workspace.display()));
-    out.push_str(&format!("  task:      {}\n", config.task));
-    if report.converged {
-        out.push_str(&format!(
-            "  result:    converged in {} round(s)\n",
-            report.rounds
-        ));
-    } else {
-        out.push_str(&format!(
-            "  result:    did not converge within {} round(s)\n",
-            report.rounds
-        ));
+/// Read a persisted run and present it; an unknown id fails clearly.
+fn status_command(run_id: &str) -> anyhow::Result<ExitCode> {
+    let store = open_store()?;
+    match store.get_run(run_id).with_context(|| "reading the run")? {
+        Some(record) => {
+            print!("{}", present(&record));
+            Ok(ExitCode::SUCCESS)
+        }
+        None => bail!(
+            "no run with id '{run_id}' in the store at {}",
+            store_path().display()
+        ),
     }
-    if report.open_findings.is_empty() {
+}
+
+/// Render a persisted run for the terminal: identity, state, rounds, and any open findings.
+fn present(record: &RunRecord) -> String {
+    let result = match record.state {
+        RunState::Running => "running (interrupted or in progress)".to_string(),
+        RunState::Converged => format!("converged in {} round(s)", record.rounds),
+        RunState::Failed => format!("did not converge within {} round(s)", record.rounds),
+    };
+    let mut out = String::new();
+    out.push_str(&format!("run {}\n", record.run_id));
+    out.push_str(&format!("  workspace: {}\n", record.workspace));
+    out.push_str(&format!("  task:      {}\n", record.task));
+    out.push_str(&format!("  result:    {result}\n"));
+    if record.open_findings.is_empty() {
         out.push_str("  findings:  none open\n");
     } else {
         out.push_str(&format!(
             "  findings:  {} open\n",
-            report.open_findings.len()
+            record.open_findings.len()
         ));
-        for id in &report.open_findings {
+        for id in &record.open_findings {
             out.push_str(&format!("    - {id}\n"));
         }
     }
@@ -138,45 +192,38 @@ fn present(config: &RunConfig, report: &RoundReport) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::{HashMap, HashSet};
 
-    fn report(converged: bool, rounds: usize, open: &[&str]) -> RoundReport {
-        RoundReport {
-            rounds,
-            converged,
-            build_executions: HashMap::new(),
-            reclaimed: HashSet::new(),
-            bearing_sizes: Vec::new(),
-            open_findings: open.iter().map(|s| (*s).to_string()).collect(),
-        }
-    }
-
-    fn config() -> RunConfig {
-        RunConfig {
+    fn record(state: RunState, rounds: usize, open: &[&str]) -> RunRecord {
+        RunRecord {
             run_id: "run-123".to_string(),
-            workspace: PathBuf::from("/tmp/ws"),
-            agent_program: "agent".to_string(),
-            agent_args: Vec::new(),
             task: "do it".to_string(),
-            verification: Vec::new(),
-            timeout: std::time::Duration::from_secs(5),
+            workspace: "/tmp/ws".to_string(),
+            state,
+            rounds,
+            open_findings: open.iter().map(|s| (*s).to_string()).collect(),
         }
     }
 
     #[test]
     fn a_converged_run_presents_success_and_no_open_findings() {
-        let text = present(&config(), &report(true, 2, &[]));
+        let text = present(&record(RunState::Converged, 2, &[]));
         assert!(text.contains("converged in 2 round(s)"));
         assert!(text.contains("none open"));
         assert!(text.contains("run-123"));
     }
 
     #[test]
-    fn a_non_converged_run_lists_open_findings() {
-        let text = present(&config(), &report(false, 8, &["F1", "F2"]));
+    fn a_failed_run_lists_open_findings() {
+        let text = present(&record(RunState::Failed, 8, &["F1", "F2"]));
         assert!(text.contains("did not converge within 8 round(s)"));
         assert!(text.contains("2 open"));
         assert!(text.contains("- F1"));
         assert!(text.contains("- F2"));
+    }
+
+    #[test]
+    fn a_running_run_presents_as_interrupted_or_in_progress() {
+        let text = present(&record(RunState::Running, 0, &[]));
+        assert!(text.contains("running"));
     }
 }
