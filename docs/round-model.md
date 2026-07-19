@@ -207,14 +207,20 @@ plan can change. The smallest aligned step is therefore the thing that *makes th
    "reconcile a fixed step set" into "converge on a goal via review findings" — and it is what
    first gives coverage a changing target set to reason about.
 
-Then **the in-flight seam** (②) — now with a real trigger: a pending-retry attempt reported as
-in-flight, cancelled via suunta's `Supersedes` when a new finding supersedes its target. Then
-**the first retry Layer** (③). Each a separate change, each a step toward this target.
+Then **the in-flight seam** (②) — *conditional on a real trigger existing*: a pending-retry
+attempt reported as in-flight, cancelled via suunta's `Supersedes` when a new finding supersedes
+its target. Then **the first retry Layer** (③). Each a separate change, each a step toward this
+target.
 
-> **Provenance.** The in-flight-seam-first ordering was proposed and started as its own change
-> (`report-in-flight-coverage`), then shelved at apply time when the `Covers` premature-
-> convergence above surfaced. The re-sequencing here is that discovery, recorded so it is not
-> re-litigated.
+> **Provenance (two apply-time discoveries).** The in-flight-seam-first ordering was proposed as
+> its own change (`report-in-flight-coverage`), then shelved when the `Covers` premature-
+> convergence above surfaced — hence findings-as-targets first. After findings-as-targets landed,
+> the seam was revisited and deferred **again**: reading the actual loop showed the "real trigger"
+> does not yet exist. `drive_build` consumes a failed attempt's retry **within its round** (no
+> attempt survives a plan change), and the loop builds **once per round, not once per target**, so
+> there is no per-finding pending attempt for coverage to supersede. Building the seam now would be
+> the ceremony the fidelity self-audit forbids; it waits for concurrency (phase 5) or a deliberate
+> deferred-retry / per-target-attempt restructure. Recorded so it is not re-litigated a third time.
 
 ---
 
@@ -222,7 +228,10 @@ in-flight, cancelled via suunta's `Supersedes` when a new finding supersedes its
 
 - **In-flight reporting could rot into ceremony.** If coverage never actually changes an
   outcome in practice, we must say so and reconsider suunta's depth here — not keep reporting
-  in-flight for show.
+  in-flight for show. **This guard has fired once**: revisiting the seam after findings-as-targets
+  showed the current synchronous, once-per-round loop has no attempt that survives a plan change,
+  so the seam was deferred rather than built as decoration (see the first-increment provenance
+  and `BACKLOG.md`). Composing suunta's coverage stays honest only once a real trigger is forced.
 - **"Aligned shape" of the first Layer could slide into pre-building.** Guard: it must be *one*
   concrete instance with a *placed seam*, never a general trait, until a second forced instance
   exists.
