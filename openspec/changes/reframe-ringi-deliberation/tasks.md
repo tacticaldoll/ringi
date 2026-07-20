@@ -30,10 +30,10 @@
 
 ## 6. Synchronous Deliberation
 
-- [ ] 6.1 Replace Builder/Reviewer/Verify rounds with a strictly single-invocation respondent → arbitration fold and tests proving the next invocation starts only after durable commit; run the complete Definition of Done.
-- [ ] 6.2 Map unresolved questions, dissent, risks, and fixed conditions to suunta residual semantics or remove suunta if the mapping is ceremonial; prove readiness stops automation without granting approval and run the complete Definition of Done.
-- [ ] 6.3 Implement conservative automatic dissent resolution and reopening with reason/provenance retention across revisions; run the complete Definition of Done.
-- [ ] 6.4 Implement durable continuation after process loss for each boundary between respondent, arbitration, revision commit, and readiness without relying on hidden session state; run the complete Definition of Done.
+- [x] 6.1 Replace Builder/Reviewer/Verify rounds with a strictly single-invocation respondent → arbitration fold and tests proving the next invocation starts only after durable commit; run the complete Definition of Done.
+- [x] 6.2 Map unresolved questions, dissent, risks, and fixed conditions to suunta residual semantics or remove suunta if the mapping is ceremonial; prove readiness stops automation without granting approval and run the complete Definition of Done.
+- [x] 6.3 Implement conservative automatic dissent resolution and reopening with reason/provenance retention across revisions; run the complete Definition of Done.
+- [x] 6.4 Implement durable continuation after process loss for each boundary between respondent, arbitration, revision commit, and readiness without relying on hidden session state; run the complete Definition of Done.
 
 ## 7. Human Decisions And Archive
 
