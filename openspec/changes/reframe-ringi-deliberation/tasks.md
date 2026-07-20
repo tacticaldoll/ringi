@@ -50,5 +50,5 @@
 
 ## 9. Apply Review And Integration Readiness
 
-- [ ] 9.1 Perform the required adversarial apply review: check for duplicated family mechanics, hidden model decision authority, a provider/policy monolith, mutable locked settings, dissent loss, sealed-feedback leakage, secret exposure, workspace effects, and unforced async/in-flight abstractions; resolve every finding and run the complete Definition of Done.
-- [ ] 9.2 Reconcile documentation, code, and delta specs; run the complete Definition of Done, then mark the implementation ready for agent-driven spec sync and completed-change deletion.
+- [x] 9.1 Perform the required adversarial apply review: check for duplicated family mechanics, hidden model decision authority, a provider/policy monolith, mutable locked settings, dissent loss, sealed-feedback leakage, secret exposure, workspace effects, and unforced async/in-flight abstractions; resolve every finding and run the complete Definition of Done.
+- [x] 9.2 Reconcile documentation, code, and delta specs; run the complete Definition of Done, then mark the implementation ready for agent-driven spec sync and completed-change deletion.
