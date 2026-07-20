@@ -5,6 +5,7 @@
 
 pub mod agent;
 pub mod archive;
+pub mod convergence;
 pub mod deliberate_loop;
 pub mod deliberation;
 pub mod dossier;

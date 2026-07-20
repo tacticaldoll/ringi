@@ -46,6 +46,20 @@ The loop SHALL evaluate readiness on the initial revision and on every freshly-p
 - **THEN** the dossier transitions to `ReadyForDecision`
 - **AND** it is not left in `Deliberating`
 
+### Requirement: A never-deliberated dossier deliberates before it can converge
+
+An un-deliberated initial revision — the root, with no parent — SHALL NOT be treated as converged even when its residual is empty, because an empty residual there means deliberation has not yet occurred rather than that every concern is resolved. Only a revision produced by arbitration (one carrying a parent) may be certified ready before a new turn runs; this is what lets a resumed, already-converged dossier transition without further turns.
+
+#### Scenario: A freshly submitted empty dossier runs a turn before readiness
+
+- **WHEN** a freshly submitted dossier whose initial revision has an empty residual is run
+- **THEN** at least one deliberation turn runs before the dossier may transition to `ReadyForDecision`
+
+#### Scenario: A resumed already-converged dossier transitions without a new turn
+
+- **WHEN** a dossier is resumed whose latest revision was produced by arbitration and has an empty residual
+- **THEN** it transitions to `ReadyForDecision` without invoking an agent
+
 ### Requirement: The arbitrator does not output or store readiness
 
 Readiness SHALL NOT be a field of the arbitration output or of a revision, and no code path may transition a dossier to `ReadyForDecision` on the basis of an agent-authored value. Readiness MUST be recomputed from the residual rather than read from stored state.
