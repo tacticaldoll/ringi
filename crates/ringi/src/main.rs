@@ -10,9 +10,8 @@
 //! commands land in later phases (see `BACKLOG.md`) and are still stubbed.
 
 use std::path::{Path, PathBuf};
-use std::process::ExitCode;
 
-use anyhow::{Context, bail};
+use anyhow::Context;
 use clap::{Parser, Subcommand};
 
 /// The ringi orchestrator command line.
@@ -28,61 +27,88 @@ enum Command {
     /// Create the default configuration and state store.
     Init,
 
-    /// Inspect a run's rounds, diffs, reviews, and verifications.
-    Inspect { run_id: String },
-    /// Cancel a run.
-    Cancel { run_id: String },
-    /// List pending approvals.
-    Approvals,
-    /// Approve a pending action.
-    Approve { approval_id: String },
-    /// Reject a pending action.
-    Reject { approval_id: String },
-
     // Dossier commands
     /// Create a new dossier draft.
     Draft,
     /// Submit a dossier draft for deliberation.
     Submit { id: String },
     /// Run synchronous deliberation on a submitted dossier.
-    Deliberate { id: String },
-    /// Make a human decision on a ready dossier.
-    Decide {
-        id: String,
-        #[arg(long, group = "decision")]
-        approve: bool,
-        #[arg(long, group = "decision")]
-        reject: bool,
-    },
+    Continue { id: String },
+    /// Inspect a dossier.
+    Inspect { id: String },
+    /// Make a human decision to approve.
+    Approve { id: String },
+    /// Reject a dossier.
+    Reject { id: String },
+    /// Cancel a dossier.
+    Cancel { id: String },
+    /// Invalidate a dossier.
+    Invalidate { id: String },
+    /// Add a condition to an approved-with-conditions dossier.
+    Condition { id: String, description: String },
 }
 
-fn main() -> anyhow::Result<ExitCode> {
+fn main() -> anyhow::Result<std::process::ExitCode> {
     match Cli::parse().command {
-        Command::Init => init_command().map(|()| ExitCode::SUCCESS),
-        Command::Draft => ringi::dossier_cli::draft_command().map(|()| ExitCode::SUCCESS),
+        Command::Init => init_command().map(|()| std::process::ExitCode::SUCCESS),
+        Command::Draft => {
+            ringi::dossier_cli::draft_command().map(|()| std::process::ExitCode::SUCCESS)
+        }
         Command::Submit { id } => {
             let mut store = open_dossier_store()?;
-            ringi::dossier_cli::submit_command(&id, &mut store).map(|()| ExitCode::SUCCESS)
+            ringi::dossier_cli::submit_command(&id, &mut store)
+                .map(|()| std::process::ExitCode::SUCCESS)
         }
-        Command::Deliberate { id } => {
+        Command::Continue { id } => {
             let mut store = open_dossier_store()?;
-            ringi::dossier_cli::deliberate_command(&id, &mut store).map(|()| ExitCode::SUCCESS)
+            ringi::dossier_cli::continue_command(&id, &mut store)
+                .map(|()| std::process::ExitCode::SUCCESS)
         }
-        Command::Decide {
-            id,
-            approve,
-            reject,
-        } => {
+        Command::Inspect { id } => {
             let store = open_dossier_store()?;
-            ringi::dossier_cli::decide_command(&id, approve, reject, &store)
-                .map(|()| ExitCode::SUCCESS)
+            ringi::dossier_cli::inspect_command(&id, &store)
+                .map(|()| std::process::ExitCode::SUCCESS)
         }
-        Command::Inspect { .. }
-        | Command::Cancel { .. }
-        | Command::Approvals
-        | Command::Approve { .. }
-        | Command::Reject { .. } => {
-            bail!("ringi is at project-shape: this command is not implemented yet")
+        Command::Approve { id } => {
+            let mut store = open_dossier_store()?;
+            ringi::dossier_cli::transition_command(
+                &id,
+                ringi::dossier::LifecycleState::Approved,
+                &mut store,
+            )
+            .map(|()| std::process::ExitCode::SUCCESS)
+        }
+        Command::Reject { id } => {
+            let mut store = open_dossier_store()?;
+            ringi::dossier_cli::transition_command(
+                &id,
+                ringi::dossier::LifecycleState::Rejected,
+                &mut store,
+            )
+            .map(|()| std::process::ExitCode::SUCCESS)
+        }
+        Command::Cancel { id } => {
+            let mut store = open_dossier_store()?;
+            ringi::dossier_cli::transition_command(
+                &id,
+                ringi::dossier::LifecycleState::Cancelled,
+                &mut store,
+            )
+            .map(|()| std::process::ExitCode::SUCCESS)
+        }
+        Command::Invalidate { id } => {
+            let mut store = open_dossier_store()?;
+            ringi::dossier_cli::transition_command(
+                &id,
+                ringi::dossier::LifecycleState::Invalidated,
+                &mut store,
+            )
+            .map(|()| std::process::ExitCode::SUCCESS)
+        }
+        Command::Condition { id, description } => {
+            let mut store = open_dossier_store()?;
+            ringi::dossier_cli::add_condition_command(&id, &description, &mut store)
+                .map(|()| std::process::ExitCode::SUCCESS)
         }
     }
 }

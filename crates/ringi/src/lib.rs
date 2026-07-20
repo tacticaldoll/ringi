@@ -4,6 +4,7 @@
 //! See `PROJECT.md` and `BACKLOG.md`.
 
 pub mod agent;
+pub mod archive;
 pub mod deliberate_loop;
 pub mod deliberation;
 pub mod dossier;

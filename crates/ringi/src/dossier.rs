@@ -11,6 +11,7 @@ pub enum LifecycleState {
     Deliberating,
     ReadyForDecision,
     Approved,
+    ApprovedWithConditions,
     Rejected,
     Cancelled,
     Invalidated,
@@ -140,8 +141,16 @@ impl Frontmatter {
                 limits: self.limits,
                 roles: self.roles,
             },
+            conditions: vec![],
         })
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Condition {
+    pub id: Uuid,
+    pub description: String,
+    pub is_met: bool,
 }
 
 /// A dossier that has been submitted and its settings are locked.
@@ -150,17 +159,31 @@ pub struct SubmittedDossier {
     pub id: Uuid,
     pub state: LifecycleState,
     pub locked_settings: LockedSettings,
+    #[serde(default)]
+    pub conditions: Vec<Condition>,
 }
 
 impl SubmittedDossier {
     pub fn transition_to(&mut self, next_state: LifecycleState) -> Result<(), &'static str> {
+        if matches!(
+            self.state,
+            LifecycleState::Approved
+                | LifecycleState::Rejected
+                | LifecycleState::Cancelled
+                | LifecycleState::Invalidated
+        ) {
+            return Err("Cannot transition from a terminal state");
+        }
+
         // Enforce valid transitions
         match (&self.state, &next_state) {
             (LifecycleState::Submitted, LifecycleState::Deliberating) => {}
             (LifecycleState::Deliberating, LifecycleState::ReadyForDecision) => {}
             (LifecycleState::ReadyForDecision, LifecycleState::Deliberating) => {} // back for conditions
             (LifecycleState::ReadyForDecision, LifecycleState::Approved) => {}
+            (LifecycleState::ReadyForDecision, LifecycleState::ApprovedWithConditions) => {}
             (LifecycleState::ReadyForDecision, LifecycleState::Rejected) => {}
+            (LifecycleState::ApprovedWithConditions, LifecycleState::ReadyForDecision) => {}
             (_, LifecycleState::Cancelled) => {}
             (_, LifecycleState::Invalidated) => {}
             _ => return Err("Invalid state transition"),

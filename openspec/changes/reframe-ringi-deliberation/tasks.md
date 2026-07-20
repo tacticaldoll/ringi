@@ -37,16 +37,16 @@
 
 ## 7. Human Decisions And Archive
 
-- [ ] 7.1 Implement human approve, reject, cancel, and invalidate transitions with terminal-state enforcement and no verdict override path; run the complete Definition of Done.
-- [ ] 7.2 Implement non-terminal approve-with-conditions, immutable predicates, repeated isolated evaluation, and return to human decision only after every condition is true; run the complete Definition of Done.
-- [ ] 7.3 Render immutable human-readable archives containing proposal, final SSOT, resolved strategy, revisions, public event index, decisions, integrity digests, and a separately labelled sealed audit section; run tamper tests and the complete Definition of Done.
-- [ ] 7.4 Prove final approval produces only an archive and performs no workspace edit, command verification, patch application, or downstream execution; run the complete Definition of Done.
+- [x] 7.1 Implement human approve, reject, cancel, and invalidate transitions with terminal-state enforcement and no verdict override path; run the complete Definition of Done.
+- [x] 7.2 Implement non-terminal approve-with-conditions, immutable predicates, repeated isolated evaluation, and return to human decision only after every condition is true; run the complete Definition of Done.
+- [x] 7.3 Render immutable human-readable archives containing proposal, final SSOT, resolved strategy, revisions, public event index, decisions, integrity digests, and a separately labelled sealed audit section; run tamper tests and the complete Definition of Done.
+- [x] 7.4 Prove final approval produces only an archive and performs no workspace edit, command verification, patch application, or downstream execution; run the complete Definition of Done.
 
 ## 8. CLI And End-To-End Flow
 
-- [ ] 8.1 Replace the workspace run commands and config scaffold with deliberative CLI commands for draft, submit, continue, inspect, approve, condition, reject, cancel, and invalidate using naming-worldview-compliant vocabulary; run the complete Definition of Done.
-- [ ] 8.2 Add end-to-end binary fixtures for economy, balanced, and assurance dossiers from draft through each human terminal decision, including restart and sealed-context exclusion; run the complete Definition of Done.
-- [ ] 8.3 Remove obsolete Builder, workspace, command-verification, patch, and code-run modules/tests/configuration after their replacements are proven; verify no execution-language compatibility shim remains and run the complete Definition of Done.
+- [x] 8.1 Replace the workspace run commands and config scaffold with deliberative CLI commands for draft, submit, continue, inspect, approve, condition, reject, cancel, and invalidate using naming-worldview-compliant vocabulary; run the complete Definition of Done.
+- [x] 8.2 Add end-to-end binary fixtures for economy, balanced, and assurance dossiers from draft through each human terminal decision, including restart and sealed-context exclusion; run the complete Definition of Done.
+- [x] 8.3 Remove obsolete Builder, workspace, command-verification, patch, and code-run modules/tests/configuration after their replacements are proven; verify no execution-language compatibility shim remains and run the complete Definition of Done.
 
 ## 9. Apply Review And Integration Readiness
 
