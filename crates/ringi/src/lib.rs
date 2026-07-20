@@ -1,13 +1,15 @@
 //! Ringi library.
 //!
-//! The orchestrator emerges from composition: [`reconcile`] wires suunta (planning and
-//! convergence), shaahid (exactly-once), and pacta (durable step lifecycle) into one loop.
+//! dossier-based execution tracking.
 //! See `PROJECT.md` and `BACKLOG.md`.
 
 pub mod agent;
-pub mod config;
+pub mod archive;
+pub mod deliberate_loop;
+pub mod deliberation;
+pub mod dossier;
+pub mod dossier_cli;
+pub mod event;
 pub mod exec;
-pub mod reconcile;
-pub mod run;
+pub mod revision;
 pub mod store;
-pub mod verify;
