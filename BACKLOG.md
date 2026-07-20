@@ -22,8 +22,14 @@ rather than relabelling them.
   public dossier revision is the sole respondent context and durable SSOT.
 - **Synchronous MVP:** only one invocation is active for a dossier. This avoids stale answers,
   cancellation, merge barriers, and unforced in-flight semantics.
-- **Spine and leaves:** respondents only answer; a logically separate arbitrator proposes complete
-  successor revisions; ringi persists the transition without interpreting prose.
+- **Spine and leaves:** respondents only answer; a logically separate arbitrator proposes the
+  successor *transition*, never the decision; ringi holds and validates the canonical revision and
+  never infers state from prose. The agent does not author the whole successor state (mechanism —
+  `Motion` — under Deferred Work).
+- **Convergence is mechanical, not agent-declared.** Readiness for human decision is computed by
+  suunta (`plan_residual(...).is_converged()`) over the residual, never asserted by the arbitrator;
+  readiness ceases to be an agent output. An `Unknown` verdict is conservatively retained, so
+  unknown is never convergence.
 - **Dissent:** unresolved dissent remains unless resolution includes a reason and source events;
   it can reopen on later evidence.
 - **Arbitration policy:** users choose Economy, Balanced, or Assurance and may inspect advanced
@@ -51,8 +57,30 @@ domain exercises its public contract honestly:
 
 No dependency is retained for historical loyalty. Ringi must not recreate any retained mechanism.
 
+suunta 0.1.1's shipped contract already covers ringi's convergence need in full: residual targets by
+`Sigil`, a per-target `Satisfaction` verdict (including a conservative `Unknown`), `plan_residual`,
+and `Residual::is_converged`. Ringi supplies the *verdict* — whether a dissent, risk, question, or
+condition is satisfied — as the domain "verb" suunta deliberately keeps downstream; ringi must not
+push suunta's contract to absorb that judgment. The only suunta seam ringi could legitimately force
+later is coverage *production*, and only once parallel/in-flight deliberation makes ringi a real
+coverage consumer. Any such advance happens in suunta's own repo, never inside a ringi change.
+
 ## Deferred Work
 
+- **Structured-move authorship (`Motion`):** replace the arbitrator authoring an entire successor
+  `Revision` (and its JSON-or-crash coupling) with a ringi-native `Motion` — a discrete,
+  provenance-bound, individually-validated operation on the residual (resolve dissent, add or close
+  risk, answer question) that the agent *declares* and ringi applies. Absence of a declared move is
+  a no-op, never an inference from prose. Until it lands, a labelled one-line stopgap keeps the
+  arbitrator prompt emitting parseable output so the loop runs.
+- **Prompt-width granularity:** the same `Motion` substrate admits a wide prompt (the agent
+  enumerates and declares many moves in one call) or a narrow one (ringi enumerates the residual and
+  asks one closed question per item). This is prompt width and invocation count, not two
+  architectures; wire it to the Economy/Balanced/Assurance posture rather than choosing globally.
+- **Residual expansion:** for suunta's residual to cover all four categories, open questions and
+  conditions must live in the `Revision` rather than be transient, and risks need stable ids (they
+  are bare strings today) so each residual item carries a `Sigil`. v1 convergence counts dissents
+  and risks only; questions and conditions follow with `Motion`.
 - **Executor consumer:** sandboxing, repository editing, verification commands, patch application,
   and any consumer of an approved archive require a separate change. They are not hidden inside
   this deliberation MVP.
