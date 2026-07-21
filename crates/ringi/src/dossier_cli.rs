@@ -67,8 +67,7 @@ pub fn submit_command(id: &str, store: &mut DossierStore) -> anyhow::Result<()> 
         current_understanding: parts[2].trim().to_string(),
         positions: vec![],
         dissents: vec![],
-        unresolved_risks: vec![],
-        readiness: false,
+        risks: vec![],
     };
     store.commit_successor_revision(id, None, &initial_revision, &[])?;
 
@@ -80,15 +79,7 @@ pub fn continue_command(id: &str, store: &mut DossierStore) -> anyhow::Result<()
     let state_json = store
         .get_dossier_state(id)?
         .context("Dossier not found in store")?;
-    let mut dossier: crate::dossier::SubmittedDossier = serde_json::from_str(&state_json)?;
-
-    if dossier.state == LifecycleState::Submitted {
-        dossier
-            .transition_to(LifecycleState::Deliberating)
-            .map_err(|e| anyhow::anyhow!(e))?;
-        store.insert_dossier(id, &serde_json::to_string(&dossier)?)?;
-    }
-
+    // The Submitted -> Deliberating transition is owned by run_deliberation.
     crate::deliberate_loop::run_deliberation(id, &state_json, store)
 }
 
@@ -192,7 +183,8 @@ pub fn inspect_command(id: &str, store: &DossierStore) -> anyhow::Result<()> {
 
     if let Some(rev) = store.get_latest_revision(id)? {
         println!("Latest Revision: {}", rev.revision_id);
-        println!("Readiness: {}", rev.readiness);
+        // Readiness is a mechanical fact recomputed from the residual, never a stored flag.
+        println!("Readiness: {}", crate::convergence::is_ready(&rev));
     }
 
     if !dossier.conditions.is_empty() {

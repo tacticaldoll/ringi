@@ -71,8 +71,7 @@ pub fn init(conn: &Connection) -> Result<(), StoreError> {
                 parent_digest         TEXT,
                 content_digest        TEXT NOT NULL,
                 original_proposal     TEXT NOT NULL,
-                current_understanding TEXT NOT NULL,
-                readiness             INTEGER NOT NULL
+                current_understanding TEXT NOT NULL
             )",
         [],
     )?;
@@ -90,20 +89,43 @@ pub fn init(conn: &Connection) -> Result<(), StoreError> {
             )",
         [],
     )?;
+    // A dissent is carried forward across revisions, each holding its own snapshot, so the
+    // logical id is unique only within a revision — the key is (id, revision_id).
     conn.execute(
         "CREATE TABLE IF NOT EXISTS dissents (
-                id              TEXT PRIMARY KEY,
+                id              TEXT NOT NULL,
                 revision_id     TEXT NOT NULL,
                 claim           TEXT NOT NULL,
-                resolved_reason TEXT
+                resolved_reason TEXT,
+                PRIMARY KEY (id, revision_id)
             )",
         [],
     )?;
     conn.execute(
         "CREATE TABLE IF NOT EXISTS resolution_provenance (
-                dissent_id TEXT NOT NULL,
-                event_id   TEXT NOT NULL,
-                PRIMARY KEY (dissent_id, event_id)
+                dissent_id  TEXT NOT NULL,
+                revision_id TEXT NOT NULL,
+                event_id    TEXT NOT NULL,
+                PRIMARY KEY (dissent_id, revision_id, event_id)
+            )",
+        [],
+    )?;
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS risks (
+                id              TEXT NOT NULL,
+                revision_id     TEXT NOT NULL,
+                description     TEXT NOT NULL,
+                resolved_reason TEXT,
+                PRIMARY KEY (id, revision_id)
+            )",
+        [],
+    )?;
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS risk_resolution_provenance (
+                risk_id     TEXT NOT NULL,
+                revision_id TEXT NOT NULL,
+                event_id    TEXT NOT NULL,
+                PRIMARY KEY (risk_id, revision_id, event_id)
             )",
         [],
     )?;
@@ -144,7 +166,7 @@ impl DossierStore {
 
     pub fn insert_dossier(&self, id: &str, state: &str) -> Result<(), StoreError> {
         self.conn.execute(
-            "INSERT INTO dossiers (id, state) VALUES (?, ?)",
+            "INSERT OR REPLACE INTO dossiers (id, state) VALUES (?, ?)",
             params![id, state],
         )?;
         Ok(())
@@ -179,30 +201,26 @@ impl DossierStore {
         &self,
         dossier_id: &str,
     ) -> Result<Option<crate::revision::Revision>, StoreError> {
-        let row = self.conn.query_row(
-            "SELECT id, parent_digest, content_digest, original_proposal, current_understanding, readiness
+        let row = self
+            .conn
+            .query_row(
+                "SELECT id, parent_digest, content_digest, original_proposal, current_understanding
              FROM revisions WHERE dossier_id = ? ORDER BY _rowid_ DESC LIMIT 1",
-            params![dossier_id],
-            |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, Option<String>>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, String>(3)?,
-                    row.get::<_, String>(4)?,
-                    row.get::<_, i64>(5)?,
-                ))
-            }
-        ).optional()?;
+                params![dossier_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                    ))
+                },
+            )
+            .optional()?;
 
-        let Some((
-            id_str,
-            parent_digest,
-            content_digest,
-            original_proposal,
-            current_understanding,
-            readiness,
-        )) = row
+        let Some((id_str, parent_digest, content_digest, original_proposal, current_understanding)) =
+            row
         else {
             return Ok(None);
         };
@@ -226,11 +244,11 @@ impl DossierStore {
             let dissent_uuid = Uuid::parse_str(&d_id).unwrap_or_default();
 
             let resolved_by = if let Some(reason) = resolved_reason {
-                let mut prov_stmt = self
-                    .conn
-                    .prepare("SELECT event_id FROM resolution_provenance WHERE dissent_id = ?")?;
+                let mut prov_stmt = self.conn.prepare(
+                    "SELECT event_id FROM resolution_provenance WHERE dissent_id = ? AND revision_id = ?",
+                )?;
                 let prov_iter =
-                    prov_stmt.query_map(params![&d_id], |row| row.get::<_, String>(0))?;
+                    prov_stmt.query_map(params![&d_id, &id_str], |row| row.get::<_, String>(0))?;
                 let mut provenance = Vec::new();
                 for p_res in prov_iter {
                     provenance.push(crate::revision::EventRef {
@@ -249,6 +267,46 @@ impl DossierStore {
             });
         }
 
+        let mut risks_stmt = self
+            .conn
+            .prepare("SELECT id, description, resolved_reason FROM risks WHERE revision_id = ?")?;
+        let risks_iter = risks_stmt.query_map(params![&id_str], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
+        })?;
+
+        let mut risks = Vec::new();
+        for risk_res in risks_iter {
+            let (r_id, description, resolved_reason) = risk_res?;
+            let risk_uuid = Uuid::parse_str(&r_id).unwrap_or_default();
+
+            let resolved_by = if let Some(reason) = resolved_reason {
+                let mut prov_stmt = self.conn.prepare(
+                    "SELECT event_id FROM risk_resolution_provenance WHERE risk_id = ? AND revision_id = ?",
+                )?;
+                let prov_iter =
+                    prov_stmt.query_map(params![&r_id, &id_str], |row| row.get::<_, String>(0))?;
+                let mut provenance = Vec::new();
+                for p_res in prov_iter {
+                    provenance.push(crate::revision::EventRef {
+                        event_id: Uuid::parse_str(&p_res?).unwrap_or_default(),
+                    });
+                }
+                Some(crate::revision::Resolution { reason, provenance })
+            } else {
+                None
+            };
+
+            risks.push(crate::revision::Risk {
+                id: risk_uuid,
+                description,
+                resolved_by,
+            });
+        }
+
         Ok(Some(crate::revision::Revision {
             revision_id,
             parent_digest: parent_digest.map(crate::revision::Digest),
@@ -257,8 +315,7 @@ impl DossierStore {
             current_understanding,
             positions: vec![],
             dissents,
-            unresolved_risks: vec![],
-            readiness: readiness != 0,
+            risks,
         }))
     }
 
@@ -333,7 +390,7 @@ impl DossierStore {
         }
         drop(stmt_events);
 
-        // 3. Verify event references in dissents
+        // 3. Verify event references in dissent and risk resolutions
         for dissent in &new_revision.dissents {
             if let Some(res) = &dissent.resolved_by {
                 for prov in &res.provenance {
@@ -352,19 +409,36 @@ impl DossierStore {
                 }
             }
         }
+        for risk in &new_revision.risks {
+            if let Some(res) = &risk.resolved_by {
+                for prov in &res.provenance {
+                    let event_id_str = prov.event_id.to_string();
+                    let count: i64 = tx.query_row(
+                        "SELECT COUNT(1) FROM events WHERE id = ?",
+                        params![event_id_str],
+                        |r| r.get(0),
+                    )?;
+                    if count == 0 {
+                        return Err(StoreError::CorruptState(format!(
+                            "Broken event reference in risk resolution: {}",
+                            event_id_str
+                        )));
+                    }
+                }
+            }
+        }
 
         // 4. Insert revision
         tx.execute(
-            "INSERT INTO revisions (id, dossier_id, parent_digest, content_digest, original_proposal, current_understanding, readiness) 
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO revisions (id, dossier_id, parent_digest, content_digest, original_proposal, current_understanding)
+             VALUES (?, ?, ?, ?, ?, ?)",
             params![
                 new_revision.revision_id.to_string(),
                 dossier_id,
                 new_revision.parent_digest.as_ref().map(|d| d.0.clone()),
                 new_revision.content_digest.0,
                 new_revision.original_proposal,
-                new_revision.current_understanding,
-                new_revision.readiness as i64
+                new_revision.current_understanding
             ],
         )?;
 
@@ -372,8 +446,9 @@ impl DossierStore {
         let mut stmt_dissents = tx.prepare(
             "INSERT INTO dissents (id, revision_id, claim, resolved_reason) VALUES (?, ?, ?, ?)",
         )?;
-        let mut stmt_prov =
-            tx.prepare("INSERT INTO resolution_provenance (dissent_id, event_id) VALUES (?, ?)")?;
+        let mut stmt_prov = tx.prepare(
+            "INSERT INTO resolution_provenance (dissent_id, revision_id, event_id) VALUES (?, ?, ?)",
+        )?;
         for dissent in &new_revision.dissents {
             let reason = dissent.resolved_by.as_ref().map(|r| r.reason.as_str());
             stmt_dissents.execute(params![
@@ -384,13 +459,44 @@ impl DossierStore {
             ])?;
             if let Some(res) = &dissent.resolved_by {
                 for prov in &res.provenance {
-                    stmt_prov
-                        .execute(params![dissent.id.to_string(), prov.event_id.to_string()])?;
+                    stmt_prov.execute(params![
+                        dissent.id.to_string(),
+                        new_revision.revision_id.to_string(),
+                        prov.event_id.to_string()
+                    ])?;
                 }
             }
         }
         drop(stmt_dissents);
         drop(stmt_prov);
+
+        // 6. Insert risks and their resolution provenance (mirrors dissents)
+        let mut stmt_risks = tx.prepare(
+            "INSERT INTO risks (id, revision_id, description, resolved_reason) VALUES (?, ?, ?, ?)",
+        )?;
+        let mut stmt_risk_prov = tx.prepare(
+            "INSERT INTO risk_resolution_provenance (risk_id, revision_id, event_id) VALUES (?, ?, ?)",
+        )?;
+        for risk in &new_revision.risks {
+            let reason = risk.resolved_by.as_ref().map(|r| r.reason.as_str());
+            stmt_risks.execute(params![
+                risk.id.to_string(),
+                new_revision.revision_id.to_string(),
+                risk.description,
+                reason
+            ])?;
+            if let Some(res) = &risk.resolved_by {
+                for prov in &res.provenance {
+                    stmt_risk_prov.execute(params![
+                        risk.id.to_string(),
+                        new_revision.revision_id.to_string(),
+                        prov.event_id.to_string()
+                    ])?;
+                }
+            }
+        }
+        drop(stmt_risks);
+        drop(stmt_risk_prov);
 
         tx.commit()?;
         Ok(())
@@ -443,8 +549,7 @@ mod tests {
                 current_understanding: "und".into(),
                 positions: vec![],
                 dissents: vec![],
-                unresolved_risks: vec![],
-                readiness: false,
+                risks: vec![],
             };
 
             let result = store.commit_successor_revision(
@@ -480,8 +585,7 @@ mod tests {
                 current_understanding: "und".into(),
                 positions: vec![],
                 dissents: vec![],
-                unresolved_risks: vec![],
-                readiness: false,
+                risks: vec![],
             };
 
             let dissent_id = Uuid::new_v4();
@@ -540,8 +644,7 @@ mod tests {
                 current_understanding: "und".into(),
                 positions: vec![],
                 dissents: vec![],
-                unresolved_risks: vec![],
-                readiness: false,
+                risks: vec![],
             };
 
             let dissent_id = Uuid::new_v4();
@@ -581,6 +684,206 @@ mod tests {
     }
 
     #[test]
+    fn risks_round_trip_with_id_reason_and_provenance() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("ringi-dossier-risks-{}.sqlite", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+
+        let open_risk_id = Uuid::new_v4();
+        let closed_risk_id = Uuid::new_v4();
+        {
+            let mut store = DossierStore::open(&path).expect("open");
+            store.insert_dossier("dossier-1", "draft").unwrap();
+
+            let event = crate::event::Event::new_public(
+                crate::event::EventPayload::PublicRecord("mitigation evidence".into()),
+                7,
+            );
+            let event_id = event.id;
+
+            let revision = crate::revision::Revision {
+                revision_id: Uuid::new_v4(),
+                parent_digest: None,
+                content_digest: crate::revision::Digest("dig".into()),
+                original_proposal: "prop".into(),
+                current_understanding: "und".into(),
+                positions: vec![],
+                dissents: vec![],
+                risks: vec![
+                    crate::revision::Risk {
+                        id: open_risk_id,
+                        description: "open risk".into(),
+                        resolved_by: None,
+                    },
+                    crate::revision::Risk {
+                        id: closed_risk_id,
+                        description: "closed risk".into(),
+                        resolved_by: Some(crate::revision::Resolution {
+                            reason: "mitigated".into(),
+                            provenance: vec![crate::revision::EventRef { event_id }],
+                        }),
+                    },
+                ],
+            };
+
+            store
+                .commit_successor_revision("dossier-1", None, &revision, &[event])
+                .expect("commit");
+        }
+
+        let store = DossierStore::open(&path).expect("reopen");
+        let reloaded = store
+            .get_latest_revision("dossier-1")
+            .expect("get")
+            .expect("some");
+
+        assert_eq!(reloaded.risks.len(), 2);
+        let open = reloaded
+            .risks
+            .iter()
+            .find(|r| r.id == open_risk_id)
+            .expect("open risk present");
+        assert!(open.resolved_by.is_none());
+        let closed = reloaded
+            .risks
+            .iter()
+            .find(|r| r.id == closed_risk_id)
+            .expect("closed risk present");
+        let res = closed.resolved_by.as_ref().expect("resolved");
+        assert_eq!(res.reason, "mitigated");
+        assert_eq!(res.provenance.len(), 1);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn multi_revision_carries_dissent_forward_and_loads_latest_snapshot() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("ringi-dossier-multi-{}.sqlite", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+
+        let dissent_id = Uuid::new_v4();
+        {
+            let mut store = DossierStore::open(&path).expect("open");
+            store.insert_dossier("dossier-1", "draft").unwrap();
+
+            // Revision A: the dissent is open.
+            let rev_a = crate::revision::Revision {
+                revision_id: Uuid::new_v4(),
+                parent_digest: None,
+                content_digest: crate::revision::Digest("a".into()),
+                original_proposal: "p".into(),
+                current_understanding: "u1".into(),
+                positions: vec![],
+                dissents: vec![crate::revision::Dissent {
+                    id: dissent_id,
+                    claim: "concern".into(),
+                    resolved_by: None,
+                }],
+                risks: vec![],
+            };
+            store
+                .commit_successor_revision("dossier-1", None, &rev_a, &[])
+                .expect("commit A");
+
+            // Revision B carries the SAME dissent id forward, now resolved. With a bare
+            // `id` primary key this would collide; the composite key (id, revision_id)
+            // stores each snapshot independently.
+            let event = crate::event::Event::new_public(
+                crate::event::EventPayload::PublicRecord("evidence".into()),
+                9,
+            );
+            let event_id = event.id;
+            let rev_b = crate::revision::Revision {
+                revision_id: Uuid::new_v4(),
+                parent_digest: Some(crate::revision::Digest("a".into())),
+                content_digest: crate::revision::Digest("b".into()),
+                original_proposal: "p".into(),
+                current_understanding: "u2".into(),
+                positions: vec![],
+                dissents: vec![crate::revision::Dissent {
+                    id: dissent_id,
+                    claim: "concern".into(),
+                    resolved_by: Some(crate::revision::Resolution {
+                        reason: "addressed".into(),
+                        provenance: vec![crate::revision::EventRef { event_id }],
+                    }),
+                }],
+                risks: vec![],
+            };
+            store
+                .commit_successor_revision(
+                    "dossier-1",
+                    Some(&rev_a.revision_id.to_string()),
+                    &rev_b,
+                    &[event],
+                )
+                .expect("commit B");
+        }
+
+        let store = DossierStore::open(&path).expect("reopen");
+        let latest = store
+            .get_latest_revision("dossier-1")
+            .expect("get")
+            .expect("some");
+
+        // The latest snapshot is B's: exactly one dissent, resolved with its provenance —
+        // not duplicated by A's open copy.
+        assert_eq!(latest.current_understanding, "u2");
+        assert_eq!(latest.dissents.len(), 1);
+        let res = latest.dissents[0].resolved_by.as_ref().expect("resolved");
+        assert_eq!(res.provenance.len(), 1);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn commit_successor_revision_rejects_broken_risk_event_reference() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!(
+            "ringi-dossier-risk-ref-{}.sqlite",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+
+        {
+            let mut store = DossierStore::open(&path).expect("open");
+            store.insert_dossier("dossier-1", "draft").unwrap();
+
+            let revision = crate::revision::Revision {
+                revision_id: Uuid::new_v4(),
+                parent_digest: None,
+                content_digest: crate::revision::Digest("dig".into()),
+                original_proposal: "prop".into(),
+                current_understanding: "und".into(),
+                positions: vec![],
+                dissents: vec![],
+                risks: vec![crate::revision::Risk {
+                    id: Uuid::new_v4(),
+                    description: "heat".into(),
+                    resolved_by: Some(crate::revision::Resolution {
+                        reason: "mitigated".into(),
+                        provenance: vec![crate::revision::EventRef {
+                            event_id: Uuid::new_v4(), // not in events
+                        }],
+                    }),
+                }],
+            };
+
+            let result = store.commit_successor_revision("dossier-1", None, &revision, &[]);
+            assert!(matches!(result, Err(StoreError::CorruptState(_))));
+
+            let count: i64 = store
+                .conn
+                .query_row("SELECT COUNT(1) FROM revisions", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(count, 0);
+        }
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
     fn invocation_coordinate_idempotency_prevents_duplicates() {
         let dir = std::env::temp_dir();
         let path = dir.join(format!("ringi-dossier-idemp-{}.sqlite", std::process::id()));
@@ -612,8 +915,7 @@ mod tests {
                 current_understanding: "und".into(),
                 positions: vec![],
                 dissents: vec![],
-                unresolved_risks: vec![],
-                readiness: false,
+                risks: vec![],
             };
 
             // First commit succeeds
