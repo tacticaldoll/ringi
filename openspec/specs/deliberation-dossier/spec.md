@@ -79,3 +79,19 @@ dossier's initial revision and for every successor produced by `propose_successo
 - **WHEN** a dossier is submitted and its initial revision is committed
 - **THEN** the initial revision's `content_digest` is computed from its content by the same
   computation `propose_successor` uses for a successor, not a fixed literal value
+
+### Requirement: A revision's original proposal is immutable across successors
+
+`Revision::propose_successor` SHALL reject a successor revision whose `original_proposal` differs
+from the parent revision's `original_proposal`.
+
+#### Scenario: A successor with a changed original proposal is rejected
+
+- **WHEN** a successor revision is proposed with an `original_proposal` different from its
+  parent's
+- **THEN** `propose_successor` returns an error and the parent revision remains current
+
+#### Scenario: A successor with an unchanged original proposal is accepted
+
+- **WHEN** a successor revision is proposed with the same `original_proposal` as its parent
+- **THEN** `propose_successor` proceeds to its other checks as today

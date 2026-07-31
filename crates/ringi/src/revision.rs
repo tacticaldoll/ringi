@@ -85,6 +85,10 @@ impl Revision {
     /// Creates a successor revision proposal and enforces conservative dissent retention.
     /// Unresolved dissents must either be carried forward as unresolved, or resolved with provenance.
     pub fn propose_successor(&self, mut new_revision: Revision) -> Result<Revision, &'static str> {
+        if new_revision.original_proposal != self.original_proposal {
+            return Err("original_proposal cannot change across a successor revision");
+        }
+
         // Enforce structural rejection for unsupported removal of unresolved dissents
         for old_dissent in &self.dissents {
             if old_dissent.resolved_by.is_none() {
@@ -191,6 +195,20 @@ mod tests {
         assert!(successor.is_ok());
         let succ = successor.unwrap();
         assert_eq!(succ.parent_digest, Some(base.content_digest));
+    }
+
+    #[test]
+    fn test_changed_original_proposal_is_rejected() {
+        let base = create_base_revision();
+        let mut next = base.clone();
+        next.revision_id = Uuid::new_v4();
+        next.original_proposal = "Let's build Y instead".into();
+
+        let err = base.propose_successor(next).unwrap_err();
+        assert_eq!(
+            err,
+            "original_proposal cannot change across a successor revision"
+        );
     }
 
     #[test]
