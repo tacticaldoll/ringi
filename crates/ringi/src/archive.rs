@@ -1,23 +1,34 @@
 //! Renders a terminal dossier's archive: a human-readable, integrity-bound record of its final
-//! SSOT, sealed with a SHA-256 digest over the rendered text.
+//! SSOT and every recorded event, sealed with a SHA-256 digest over the rendered text.
 //!
 //! Per `PROJECT.md`'s Archive invariant, this is a record only — it grants no execution
 //! authority and triggers no workspace effect. `render_archive` refuses a non-terminal dossier
-//! (only `Approved`/`Rejected`/`Cancelled`/`Invalidated` may be archived).
-//!
-//! **Known incompleteness, not a deliberate omission:** the rendered "Public Event Index" and
-//! "Sealed Audit Section" are still placeholder text ("omitted for brevity") — no event, public
-//! or sealed, is actually fetched and rendered yet. A human auditing an archived dossier today
-//! cannot see the events or evaluator reasoning that led to the decision, only the final SSOT
-//! text. Closing this is a separate change; this doc names the gap so it isn't mistaken for the
-//! sealed-evaluation invariant `event.rs`'s projection already enforces for respondent prompts
-//! (a different, already-honored guarantee).
+//! (only `Approved`/`Rejected`/`Cancelled`/`Invalidated` may be archived). Per the Sealed
+//! evaluation invariant ("evaluator reasons are archived for humans but never injected into
+//! respondent or synthesis context"), the archive is where sealed reasoning surfaces for a human
+//! — never fed back into `deliberation.rs`'s prompt builders.
 
 use crate::dossier::LifecycleState;
+use crate::event::{Event, EventPayload, EventVisibility};
 use crate::store::DossierStore;
 use anyhow::Context;
 use sha2::{Digest, Sha256};
 use std::fmt::Write;
+
+/// One human-readable line for an event's content, regardless of which payload variant it is —
+/// so a rendered section never silently drops a payload kind no current caller constructs yet
+/// (`RawTranscript`/`Synthesis`).
+fn render_event_line(event: &Event) -> String {
+    match &event.payload {
+        EventPayload::RawTranscript(text) => format!("Raw transcript: {text}"),
+        EventPayload::Synthesis(text) => format!("Synthesis: {text}"),
+        EventPayload::PublicRecord(text) => text.clone(),
+        EventPayload::SealedEvaluation {
+            evaluator,
+            reasoning,
+        } => format!("[{evaluator}] {reasoning}"),
+    }
+}
 
 pub fn render_archive(dossier_id: &str, store: &DossierStore) -> anyhow::Result<String> {
     let state_json = store
@@ -54,13 +65,33 @@ pub fn render_archive(dossier_id: &str, store: &DossierStore) -> anyhow::Result<
         writeln!(&mut out, "\n*(No revisions found)*")?;
     }
 
+    let events = store.events_for_dossier(dossier_id)?;
+
     writeln!(&mut out, "\n## Public Event Index")?;
-    // We would fetch public events here from the store.
-    // For now, let's just mark the section.
-    writeln!(&mut out, "*(Events omitted for brevity)*")?;
+    let public: Vec<&Event> = events
+        .iter()
+        .filter(|e| e.visibility == EventVisibility::Public)
+        .collect();
+    if public.is_empty() {
+        writeln!(&mut out, "*(No public events recorded)*")?;
+    } else {
+        for event in public {
+            writeln!(&mut out, "- {}", render_event_line(event))?;
+        }
+    }
 
     writeln!(&mut out, "\n## Sealed Audit Section")?;
-    writeln!(&mut out, "*(Sealed evaluations omitted for brevity)*")?;
+    let sealed: Vec<&Event> = events
+        .iter()
+        .filter(|e| e.visibility == EventVisibility::Sealed)
+        .collect();
+    if sealed.is_empty() {
+        writeln!(&mut out, "*(No sealed evaluations recorded)*")?;
+    } else {
+        for event in sealed {
+            writeln!(&mut out, "- {}", render_event_line(event))?;
+        }
+    }
 
     // Compute integrity digest
     let mut hasher = Sha256::new();
@@ -75,4 +106,180 @@ pub fn render_archive(dossier_id: &str, store: &DossierStore) -> anyhow::Result<
     )?;
 
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::dossier::{
+        ArbitrationSettings, Limits, LockedSettings, RoleBindings, StrategyPreset, SubmittedDossier,
+    };
+    use crate::revision::{Digest as RevisionDigest, Revision};
+    use uuid::Uuid;
+
+    fn approved_dossier(id: Uuid) -> SubmittedDossier {
+        SubmittedDossier {
+            id,
+            state: LifecycleState::Approved,
+            locked_settings: LockedSettings {
+                arbitration: ArbitrationSettings::resolve(StrategyPreset::Economy),
+                limits: Limits { max_turns: 1 },
+                roles: RoleBindings {
+                    respondent: "unused".to_string(),
+                    arbitrator: "unused".to_string(),
+                },
+            },
+            conditions: vec![],
+        }
+    }
+
+    fn base_revision() -> Revision {
+        Revision {
+            revision_id: Uuid::new_v4(),
+            parent_digest: None,
+            content_digest: RevisionDigest("dig".into()),
+            original_proposal: "p".into(),
+            current_understanding: "u".into(),
+            positions: vec![],
+            dissents: vec![],
+            risks: vec![],
+        }
+    }
+
+    fn open_store(name: &str) -> DossierStore {
+        let path = std::env::temp_dir().join(format!(
+            "ringi-archive-{name}-{}.sqlite",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        DossierStore::open(&path).unwrap()
+    }
+
+    #[test]
+    fn public_events_render_in_commit_order() {
+        let mut store = open_store("public-order");
+        let id = Uuid::new_v4();
+        let id_str = id.to_string();
+        store
+            .insert_dossier(
+                &id_str,
+                &serde_json::to_string(&approved_dossier(id)).unwrap(),
+            )
+            .unwrap();
+
+        let first = Event::new_public(EventPayload::PublicRecord("first claim".into()), 1);
+        let second = Event::new_public(EventPayload::PublicRecord("second claim".into()), 2);
+        store
+            .commit_successor_revision(&id_str, None, &base_revision(), &[first, second])
+            .unwrap();
+
+        let rendered = render_archive(&id_str, &store).unwrap();
+        let first_pos = rendered.find("first claim").unwrap();
+        let second_pos = rendered.find("second claim").unwrap();
+        assert!(first_pos < second_pos, "events must render in commit order");
+    }
+
+    #[test]
+    fn a_sealed_evaluation_renders_its_evaluator_and_reasoning() {
+        let mut store = open_store("sealed");
+        let id = Uuid::new_v4();
+        let id_str = id.to_string();
+        store
+            .insert_dossier(
+                &id_str,
+                &serde_json::to_string(&approved_dossier(id)).unwrap(),
+            )
+            .unwrap();
+
+        let sealed = Event::new_sealed(
+            EventPayload::SealedEvaluation {
+                evaluator: "condition:budget".into(),
+                reasoning: "under the cap".into(),
+            },
+            1,
+        );
+        store
+            .commit_successor_revision(&id_str, None, &base_revision(), &[sealed])
+            .unwrap();
+
+        let rendered = render_archive(&id_str, &store).unwrap();
+        assert!(rendered.contains("[condition:budget] under the cap"));
+    }
+
+    #[test]
+    fn empty_sections_render_an_explicit_placeholder() {
+        let mut store = open_store("empty");
+        let id = Uuid::new_v4();
+        let id_str = id.to_string();
+        store
+            .insert_dossier(
+                &id_str,
+                &serde_json::to_string(&approved_dossier(id)).unwrap(),
+            )
+            .unwrap();
+        store
+            .commit_successor_revision(&id_str, None, &base_revision(), &[])
+            .unwrap();
+
+        let rendered = render_archive(&id_str, &store).unwrap();
+        assert!(rendered.contains("*(No public events recorded)*"));
+        assert!(rendered.contains("*(No sealed evaluations recorded)*"));
+    }
+
+    #[test]
+    fn the_integrity_digest_differs_when_event_content_differs() {
+        let mut store_a = open_store("digest-a");
+        let id_a = Uuid::new_v4();
+        let id_a_str = id_a.to_string();
+        store_a
+            .insert_dossier(
+                &id_a_str,
+                &serde_json::to_string(&approved_dossier(id_a)).unwrap(),
+            )
+            .unwrap();
+        store_a
+            .commit_successor_revision(
+                &id_a_str,
+                None,
+                &base_revision(),
+                &[Event::new_public(
+                    EventPayload::PublicRecord("claim A".into()),
+                    1,
+                )],
+            )
+            .unwrap();
+
+        let mut store_b = open_store("digest-b");
+        let id_b = Uuid::new_v4();
+        let id_b_str = id_b.to_string();
+        store_b
+            .insert_dossier(
+                &id_b_str,
+                &serde_json::to_string(&approved_dossier(id_b)).unwrap(),
+            )
+            .unwrap();
+        store_b
+            .commit_successor_revision(
+                &id_b_str,
+                None,
+                &base_revision(),
+                &[Event::new_public(
+                    EventPayload::PublicRecord("claim B".into()),
+                    1,
+                )],
+            )
+            .unwrap();
+
+        let rendered_a = render_archive(&id_a_str, &store_a).unwrap();
+        let rendered_b = render_archive(&id_b_str, &store_b).unwrap();
+
+        let digest_of = |rendered: &str| {
+            rendered
+                .lines()
+                .find(|l| l.starts_with("**Integrity Digest"))
+                .unwrap()
+                .to_string()
+        };
+        assert_ne!(digest_of(&rendered_a), digest_of(&rendered_b));
+    }
 }
