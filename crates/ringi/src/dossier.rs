@@ -246,4 +246,36 @@ mod tests {
         let parsed = parse_frontmatter(&serialized).unwrap();
         assert_eq!(draft, parsed);
     }
+
+    fn submitted_dossier(state: LifecycleState) -> SubmittedDossier {
+        SubmittedDossier {
+            id: Uuid::new_v4(),
+            state,
+            locked_settings: LockedSettings {
+                arbitration: ArbitrationSettings::resolve(StrategyPreset::Economy),
+                limits: Limits::default(),
+                roles: RoleBindings::default(),
+            },
+            conditions: vec![],
+        }
+    }
+
+    #[test]
+    fn approved_with_conditions_can_reopen_to_ready_for_decision() {
+        let mut dossier = submitted_dossier(LifecycleState::ApprovedWithConditions);
+        dossier
+            .transition_to(LifecycleState::ReadyForDecision)
+            .expect("ApprovedWithConditions -> ReadyForDecision is a valid transition");
+        assert_eq!(dossier.state, LifecycleState::ReadyForDecision);
+    }
+
+    #[test]
+    fn a_draft_cannot_be_reopened_to_ready_for_decision() {
+        let mut dossier = submitted_dossier(LifecycleState::Submitted);
+        let err = dossier
+            .transition_to(LifecycleState::ReadyForDecision)
+            .unwrap_err();
+        assert_eq!(err, "Invalid state transition");
+        assert_eq!(dossier.state, LifecycleState::Submitted);
+    }
 }

@@ -350,4 +350,82 @@ mod tests {
         let updated: SubmittedDossier = serde_json::from_str(&state_json).unwrap();
         assert_eq!(updated.state, LifecycleState::Approved);
     }
+
+    #[test]
+    fn reopening_an_approved_with_conditions_dossier_lets_it_reach_approved() {
+        let _guard = crate::PROCESS_CWD_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+
+        let dir = std::env::temp_dir().join(format!("ringi-reopen-cli-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::create_dir_all(dir.join(".ringi").join("dossiers")).unwrap();
+
+        let evaluator = fake_agent(
+            "eval-true.sh",
+            "echo '{\"verdict\":\"True\",\"reason\":\"signed off\",\"provenance\":[]}'",
+        );
+
+        let id = Uuid::new_v4();
+        let id_str = id.to_string();
+        // Starts already ApprovedWithConditions — the state a real dossier reaches after
+        // `approve` finds an unmet condition (transition_command's own routing).
+        let dossier = SubmittedDossier {
+            id,
+            state: LifecycleState::ApprovedWithConditions,
+            locked_settings: LockedSettings {
+                arbitration: ArbitrationSettings::resolve(StrategyPreset::Economy),
+                limits: Limits { max_turns: 1 },
+                roles: RoleBindings {
+                    respondent: evaluator.to_str().unwrap().to_string(),
+                    arbitrator: "unused".to_string(),
+                },
+            },
+            conditions: vec![Condition {
+                id: Uuid::new_v4(),
+                description: "Security team has signed off".into(),
+                is_met: false,
+            }],
+        };
+        let json = serde_json::to_string(&dossier).unwrap();
+
+        let store_path = dir.join("store.sqlite");
+        let mut store = DossierStore::open(&store_path).unwrap();
+        let registry = crate::registry::SqliteRegistry::open(&store_path).unwrap();
+        store.insert_dossier(&id_str, &json).unwrap();
+        store
+            .commit_successor_revision(
+                &id_str,
+                None,
+                &Revision {
+                    revision_id: Uuid::new_v4(),
+                    parent_digest: None,
+                    content_digest: Digest("dig".into()),
+                    original_proposal: "p".into(),
+                    current_understanding: "u".into(),
+                    positions: vec![],
+                    dissents: vec![],
+                    risks: vec![],
+                },
+                &[],
+            )
+            .unwrap();
+
+        let original_cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&dir).unwrap();
+        let result = (|| -> anyhow::Result<()> {
+            // The reopen path: ApprovedWithConditions -> ReadyForDecision.
+            transition_command(&id_str, LifecycleState::ReadyForDecision, &mut store)?;
+            evaluate_command(&id_str, &mut store, &registry)?;
+            transition_command(&id_str, LifecycleState::Approved, &mut store)
+        })();
+        std::env::set_current_dir(&original_cwd).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+
+        result.unwrap();
+        let state_json = store.get_dossier_state(&id_str).unwrap().unwrap();
+        let updated: SubmittedDossier = serde_json::from_str(&state_json).unwrap();
+        assert_eq!(updated.state, LifecycleState::Approved);
+    }
 }
