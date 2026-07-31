@@ -1,6 +1,6 @@
 [package]
 name = "ringi"
-description = "A local automation orchestrator that drives Agent CLIs through a durable, gated build-review-verify loop."
+description = "A local deliberation application: dossiers move through draft, submit, answer, arbitrate, decide, and archive, composing durable claim/settle and mechanical convergence over Agent CLIs."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

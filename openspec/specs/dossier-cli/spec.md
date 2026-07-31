@@ -27,3 +27,18 @@ from the domain behavior it delegates to.
 - **WHEN** `inspect` is run on a dossier whose latest revision is a successor with a converged
   residual
 - **THEN** the displayed readiness is `true`
+
+### Requirement: A dossier draft file's frontmatter is cleanly delimited
+
+The frontmatter JSON written to a dossier draft file SHALL be separated from both surrounding
+`---` delimiters by a newline, on every command that writes or rewrites the file.
+
+#### Scenario: A freshly drafted dossier's frontmatter is cleanly delimited
+
+- **WHEN** `ringi draft` creates a new dossier file
+- **THEN** the frontmatter JSON is preceded and followed by a newline before each `---` delimiter
+
+#### Scenario: A rewritten dossier's frontmatter stays cleanly delimited
+
+- **WHEN** `ringi submit` or a lifecycle transition rewrites a dossier file's frontmatter
+- **THEN** the frontmatter JSON is preceded and followed by a newline before each `---` delimiter
