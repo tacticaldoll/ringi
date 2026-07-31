@@ -53,7 +53,7 @@ fn cadw_constitution() -> Constitution {
     Constitution::new("ringi").boundary(
         ModuleBoundary::in_crate("ringi")
             .module("crate::residual_ledger")
-            .confine_external_crate("cadw_contract")
+            .confine_external_crate("cadw")
             .because(
                 "cadw's vocabulary (TargetId, Ledger, Move, Validator, Rejection, ...) is \
                  confined to the residual-ledger seam and never names a ringi domain type — see \

@@ -11,17 +11,14 @@ repository = "https://github.com/tacticaldoll/ringi"
 
 [workspace.dependencies]
 # Published family facades composed by ringi: pacta owns lifecycle, suunta owns convergence,
-# and shaahid owns idempotency.
+# shaahid owns idempotency, and cadw owns residual-ledger batch-fold validation.
 pacta = "0.2.2"
 pacta-memory = "0.2.2"
 pacta-conformance = "0.2.2"
 rusqlite = { version = "0.32", features = ["bundled"] }
 suunta = "0.1.1"
 shaahid = "0.1.1"
-# Temporary git dependency: cadw is unpublished (0.0.0). Once this integration proves out through
-# real usage and dogfooding, cadw publishes 0.1.0 and this becomes a normal version dependency,
-# matching pacta/suunta/shaahid above.
-cadw-contract = { git = "https://github.com/tacticaldoll/cadw" }
+cadw = "0.1.0"
 uuid = { version = "1", features = ["v5"] }
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"

@@ -111,13 +111,12 @@ target an invocation concerns, but MUST NOT replace or approximate the content-d
 
 ### Requirement: cadw's vocabulary is confined to the residual-ledger seam
 
-`cadw_contract`'s vocabulary (`TargetId`, `Ledger`, `Move`, `Validator`, `Rejection`) SHALL be
-imported only within `crate::residual_ledger`. No `Revision`, `Dissent`, `Risk`, `Question`, or
-other ringi domain type SHALL be named using `cadw`'s terms, matching the seam discipline already
+`cadw`'s vocabulary (`TargetId`, `Ledger`, `Move`, `Validator`, `Rejection`) SHALL be imported
+only within `crate::residual_ledger`. No `Revision`, `Dissent`, `Risk`, `Question`, or other
+ringi domain type SHALL be named using `cadw`'s terms, matching the seam discipline already
 enforced for `pacta` (`crate::registry`) and `suunta` (`crate::convergence`).
 
 #### Scenario: cadw is unreachable from outside the residual-ledger seam
 
 - **WHEN** the workspace is checked for module boundaries
-- **THEN** `cadw_contract` is imported only from `crate::residual_ledger`, and nowhere else in the
-  crate
+- **THEN** `cadw` is imported only from `crate::residual_ledger`, and nowhere else in the crate
