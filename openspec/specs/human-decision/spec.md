@@ -52,3 +52,25 @@ subsequently-built respondent or arbitrator prompt.
 - **WHEN** an evaluator's reasoning is recorded as a sealed event for a dossier
 - **AND** a respondent prompt is later built from that dossier's latest revision
 - **THEN** the respondent prompt does not contain the sealed reasoning text
+
+### Requirement: An ApprovedWithConditions dossier can be reopened for re-evaluation
+
+A dossier in `ApprovedWithConditions` SHALL be reachable back to `ReadyForDecision` through the
+CLI, so its unmet conditions can be judged via `evaluate` and it can eventually reach plain
+`Approved`. A dossier not in `ApprovedWithConditions` SHALL be rejected as an invalid transition.
+
+#### Scenario: Reopening an ApprovedWithConditions dossier reaches ReadyForDecision
+
+- **WHEN** a dossier in `ApprovedWithConditions` is reopened
+- **THEN** its state becomes `ReadyForDecision`
+
+#### Scenario: Reopening a dossier not in ApprovedWithConditions is rejected
+
+- **WHEN** a dossier not in `ApprovedWithConditions` is reopened
+- **THEN** the transition is rejected as invalid and the dossier's state does not change
+
+#### Scenario: A reopened dossier's conditions can be evaluated again
+
+- **WHEN** an `ApprovedWithConditions` dossier with an unmet condition is reopened and then
+  evaluated
+- **THEN** the evaluation runs (it is no longer refused for being outside `ReadyForDecision`)

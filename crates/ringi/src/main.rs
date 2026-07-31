@@ -50,6 +50,8 @@ enum Command {
     Condition { id: String, description: String },
     /// Judge a dossier's unmet conditions with isolated evaluator invocations.
     Evaluate { id: String },
+    /// Reopen an ApprovedWithConditions dossier back to ReadyForDecision so `evaluate` can run.
+    Reopen { id: String },
 }
 
 fn main() -> anyhow::Result<std::process::ExitCode> {
@@ -120,6 +122,15 @@ fn main() -> anyhow::Result<std::process::ExitCode> {
             let registry = open_registry()?;
             ringi::dossier_cli::evaluate_command(&id, &mut store, &registry)
                 .map(|()| std::process::ExitCode::SUCCESS)
+        }
+        Command::Reopen { id } => {
+            let mut store = open_dossier_store()?;
+            ringi::dossier_cli::transition_command(
+                &id,
+                ringi::dossier::LifecycleState::ReadyForDecision,
+                &mut store,
+            )
+            .map(|()| std::process::ExitCode::SUCCESS)
         }
     }
 }
