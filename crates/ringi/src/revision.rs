@@ -22,6 +22,16 @@ pub struct Dissent {
     pub resolved_by: Option<Resolution>,
 }
 
+/// A risk carried by a revision. Mirrors a dissent: a stable id, a description, and an
+/// optional provenance-bound resolution. An unresolved risk (no `resolved_by`) is a live
+/// deliberation target; a resolved one is closed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Risk {
+    pub id: Uuid,
+    pub description: String,
+    pub resolved_by: Option<Resolution>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Revision {
     pub revision_id: Uuid,
@@ -33,8 +43,7 @@ pub struct Revision {
     pub current_understanding: String,
     pub positions: Vec<String>,
     pub dissents: Vec<Dissent>,
-    pub unresolved_risks: Vec<String>,
-    pub readiness: bool,
+    pub risks: Vec<Risk>,
 }
 
 impl Revision {
@@ -74,6 +83,29 @@ impl Revision {
             }
         }
 
+        // Enforce conservative retention for risks, mirroring dissents: an unresolved risk
+        // must be carried forward, and a newly-resolved one needs a reason and provenance.
+        for old_risk in &self.risks {
+            if old_risk.resolved_by.is_none() {
+                let matching = new_revision.risks.iter().find(|r| r.id == old_risk.id);
+                match matching {
+                    Some(new_risk) => {
+                        if let Some(res) = &new_risk.resolved_by {
+                            if res.reason.is_empty() {
+                                return Err("Risk resolution requires a reason");
+                            }
+                            if res.provenance.is_empty() {
+                                return Err("Risk resolution requires event provenance");
+                            }
+                        }
+                    }
+                    None => {
+                        return Err("Cannot silently remove an unresolved risk");
+                    }
+                }
+            }
+        }
+
         new_revision.parent_digest = Some(self.content_digest.clone());
         new_revision.content_digest = new_revision.compute_digest();
         Ok(new_revision)
@@ -97,9 +129,27 @@ mod tests {
                 claim: "X is too slow".into(),
                 resolved_by: None,
             }],
-            unresolved_risks: vec![],
-            readiness: false,
+            risks: vec![],
         }
+    }
+
+    fn base_with_unresolved_risk() -> (Revision, Uuid) {
+        let risk_id = Uuid::new_v4();
+        let base = Revision {
+            revision_id: Uuid::new_v4(),
+            parent_digest: None,
+            content_digest: Digest("initial".into()),
+            original_proposal: "Let's build X".into(),
+            current_understanding: "Building X".into(),
+            positions: vec![],
+            dissents: vec![],
+            risks: vec![Risk {
+                id: risk_id,
+                description: "X may overheat".into(),
+                resolved_by: None,
+            }],
+        };
+        (base, risk_id)
     }
 
     #[test]
@@ -156,5 +206,55 @@ mod tests {
 
         let successor = base.propose_successor(next);
         assert!(successor.is_ok());
+    }
+
+    #[test]
+    fn test_unresolved_risk_carried_forward_keeps_id() {
+        let (base, risk_id) = base_with_unresolved_risk();
+        let mut next = base.clone();
+        next.revision_id = Uuid::new_v4();
+
+        let succ = base.propose_successor(next).expect("carry risk forward");
+        assert_eq!(succ.risks[0].id, risk_id);
+    }
+
+    #[test]
+    fn test_silent_removal_of_unresolved_risk_is_rejected() {
+        let (base, _) = base_with_unresolved_risk();
+        let mut next = base.clone();
+        next.revision_id = Uuid::new_v4();
+        next.risks.clear();
+
+        let err = base.propose_successor(next).unwrap_err();
+        assert_eq!(err, "Cannot silently remove an unresolved risk");
+    }
+
+    #[test]
+    fn test_risk_resolution_without_provenance_is_rejected() {
+        let (base, _) = base_with_unresolved_risk();
+        let mut next = base.clone();
+        next.revision_id = Uuid::new_v4();
+        next.risks[0].resolved_by = Some(Resolution {
+            reason: "Mitigated with a heatsink".into(),
+            provenance: vec![],
+        });
+
+        let err = base.propose_successor(next).unwrap_err();
+        assert_eq!(err, "Risk resolution requires event provenance");
+    }
+
+    #[test]
+    fn test_valid_risk_resolution_with_provenance() {
+        let (base, _) = base_with_unresolved_risk();
+        let mut next = base.clone();
+        next.revision_id = Uuid::new_v4();
+        next.risks[0].resolved_by = Some(Resolution {
+            reason: "Mitigated with a heatsink".into(),
+            provenance: vec![EventRef {
+                event_id: Uuid::new_v4(),
+            }],
+        });
+
+        assert!(base.propose_successor(next).is_ok());
     }
 }

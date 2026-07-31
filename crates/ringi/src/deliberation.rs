@@ -31,11 +31,15 @@ pub fn build_respondent_prompt(question: &str, revision: &Revision) -> String {
         }
     }
 
-    let unresolved_risks = &revision.unresolved_risks;
+    let unresolved_risks: Vec<_> = revision
+        .risks
+        .iter()
+        .filter(|r| r.resolved_by.is_none())
+        .collect();
     if !unresolved_risks.is_empty() {
         prompt.push_str("\n## Unresolved Risks\n");
         for r in unresolved_risks {
-            prompt.push_str(&format!("- {}\n", r));
+            prompt.push_str(&format!("- {}\n", r.description));
         }
     }
 
@@ -53,21 +57,18 @@ pub struct ArbitrationOutput {
     pub successor_revision: Revision,
     /// A list of zero or more specific questions for respondents.
     pub next_questions: Vec<String>,
-    /// A readiness boolean indicating whether the revision is ready for human approval.
-    pub readiness: bool,
 }
 
 /// Applies an arbitration output to a base revision, enforcing structural validity.
-/// Returns the new successor revision, the next questions, and the readiness flag.
+/// Returns the new successor revision and the next questions. Readiness is NOT an output
+/// here: it is computed mechanically from the residual by the `convergence` seam.
 pub fn apply_arbitration(
     base: &Revision,
     output: ArbitrationOutput,
-) -> Result<(Revision, Vec<String>, bool), &'static str> {
-    let mut successor = output.successor_revision;
-    // Readiness from the output must match the revision's readiness, or we override it.
-    successor.readiness = output.readiness;
+) -> Result<(Revision, Vec<String>), &'static str> {
+    let successor = output.successor_revision;
     let validated_successor = base.propose_successor(successor)?;
-    Ok((validated_successor, output.next_questions, output.readiness))
+    Ok((validated_successor, output.next_questions))
 }
 
 /// Build the prompt for an arbitrator agent.
@@ -87,8 +88,17 @@ pub fn build_arbitrator_prompt(revision: &Revision, recent_claims: &[String]) ->
         }
     }
 
-    prompt
-        .push_str("\nPlease propose a complete successor revision, next questions, and readiness.");
+    prompt.push_str("\nPlease propose a complete successor revision and next questions.");
+    // TEMPORARY STOPGAP — owned by, and to be deleted with, the future `Motion` slice.
+    // The transport (`agent::parse_metadata`) scans stdout lines in reverse for a single
+    // line that parses as JSON, so the arbitrator must emit its structured output as
+    // exactly one line of compact JSON. This keeps the loop runnable until `Motion`
+    // replaces whole-successor authorship with declared moves.
+    prompt.push_str(
+        "\n\nEnd your reply with exactly one line of compact JSON (no surrounding prose, \
+         no pretty-printing) of the form: \
+         {\"successor_revision\": {...}, \"next_questions\": [...]}",
+    );
     prompt
 }
 
@@ -192,8 +202,21 @@ mod tests {
                     }),
                 },
             ],
-            unresolved_risks: vec!["Aliens".into()],
-            readiness: false,
+            risks: vec![
+                crate::revision::Risk {
+                    id: Uuid::new_v4(),
+                    description: "Aliens".into(),
+                    resolved_by: None,
+                },
+                crate::revision::Risk {
+                    id: Uuid::new_v4(),
+                    description: "Solar flare".into(),
+                    resolved_by: Some(crate::revision::Resolution {
+                        reason: "Shielding".into(),
+                        provenance: vec![],
+                    }),
+                },
+            ],
         };
 
         let prompt = build_respondent_prompt("What fuel to use?", &revision);
@@ -202,6 +225,7 @@ mod tests {
         assert!(prompt.contains("Too expensive"));
         assert!(!prompt.contains("Too far")); // resolved should not be included
         assert!(prompt.contains("Aliens"));
+        assert!(!prompt.contains("Solar flare")); // resolved risk should not be included
         assert!(prompt.contains("What fuel to use?"));
     }
 
@@ -233,8 +257,7 @@ mod tests {
                 claim: "No".into(),
                 resolved_by: None,
             }],
-            unresolved_risks: vec![],
-            readiness: false,
+            risks: vec![],
         };
 
         // Missing dissent resolution
@@ -247,11 +270,9 @@ mod tests {
                 current_understanding: "Plan".into(),
                 positions: vec![],
                 dissents: vec![], // Dropped dissent!
-                unresolved_risks: vec![],
-                readiness: true,
+                risks: vec![],
             },
             next_questions: vec![],
-            readiness: true,
         };
 
         let result = apply_arbitration(&base, output);
@@ -290,8 +311,7 @@ mod tests {
             current_understanding: "Plan".into(),
             positions: vec![],
             dissents: vec![],
-            unresolved_risks: vec![],
-            readiness: false,
+            risks: vec![],
         };
 
         let prompt = build_respondent_prompt("Question", &base);
