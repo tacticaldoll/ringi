@@ -8,20 +8,20 @@ This document is the guardrail; `scripts/naming-guard.sh` mechanizes the hard pa
 ## Native register — ringi's own domain
 
 Ringi's own domain names follow a clear **deliberative-governance** register — the arc a
-*ringi* (稟議) runs: **propose → review → verify → sanction → approve**. Ringi is an
+*ringi* (稟議) runs: **draft → deliberate → decide → archive**. Ringi is an
 application, not a published contract, so **clarity outranks evocativeness**: prefer a plain,
 precise deliberative word over a cute metaphor.
 
-Current native terms (keep them clear): `Run`, `Step`, `Builder`, `Reviewer`, `Verification`,
-`Approval`, `Policy` (Allow / Ask / Deny). The CLI's `Command` is standard CLI vocabulary,
-not a domain concept — it is fine and exempt from the guard.
+Current native terms (keep them clear): `Dossier`, `Draft`, `Revision`, `Respondent`,
+`Arbitrator`, `Evaluator`, `Dissent`, `Risk`, `Condition`, `Decision`, and `Archive`. The CLI's
+`Command` is standard CLI vocabulary, not a domain concept — it is fine and exempt from the guard.
 
 ## Seam rule — brick terms stay at the seam
 
 Each brick has its own register: pacta is legal/contract (`Pact`, `Registry`, `release`),
 suunta is navigation (`Bearing`, `Course`, `Sigil`), shaahid is witness (`Deed`, `witness`).
-When ringi calls a brick, it uses that brick's term — **but only in the thin seam adapters**
-(`reconcile::seam` and its future kin). Brick vocabulary **must not** bleed into ringi's own
+When ringi calls a brick, it uses that brick's term — **but only in thin seam adapters**.
+Brick vocabulary **must not** bleed into ringi's own
 domain types or modules. The seam is where the registers meet, and it is bounded there.
 
 ## Banned — the queue-runtime / CQRS pull

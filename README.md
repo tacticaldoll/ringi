@@ -1,37 +1,37 @@
 # Ringi
 
-Ringi is a local automation orchestrator for Agent CLIs. It drives a
-**Builder → Reviewer → verify → gate → retry** loop over code work, keeping durable state,
-enforcing policy and human approval, and verifying with objective tools — while the Agent
-CLIs do the thinking and editing.
+Ringi is a local deliberation application for Agent CLIs. It takes one proposal through a bounded
+稟議 process: respondents answer questions, an independent arbitrator maintains a durable dossier,
+and a human records the final decision.
 
-A *ringi* (稟議) is a proposal circulated for review and approval before it acts. Ringi runs
-that shape: agents propose, tools and a reviewer scrutinize, policy and a human gate, and the
-loop converges or stops.
+```text
+draft → submit → answer → arbitrate → decide → archive
+```
 
-## What ringi owns — and what it composes
+Agent CLIs are opaque respondents. Ringi supplies bounded natural-language context on stdin and
+records their stdout answers; it does not govern whether they use OpenSpec or any other internal
+method. Ringi itself performs no workspace mutation, patch application, or downstream execution.
 
-Ringi is a thin controller, not a runtime. The hard mechanics come from the pacta family:
+## What ringi composes
 
-- **pacta** — durable step lifecycle (claim → execute → settle, with `release` for retry);
-- **suunta** — convergence: is the run done?
-- **shaahid** — step idempotency, so a resumed step never runs twice.
+- **pacta** for durable invocation lifecycle and recovery when honestly required;
+- **suunta** for residual convergence over unresolved questions, dissent, risks, and conditions;
+- **shaahid** for exactly-once recovery of one fixed Agent invocation.
 
-Ringi owns only its own domain: Agent-CLI adapters, subprocess execution, git-worktree
-isolation, policy content, approval, artifacts, and the loop that wires it all. It is a
-family **leaf** — an application, not a library.
+Ringi owns dossier revisions, provenance, human decisions, archive rendering, and the thin wiring
+between those concerns.
 
-## Status (0.1.0, in development)
+## Status
 
-Project shape only: the command surface exists (stubbed); behavior is built bet-first — see
-`BACKLOG.md`. The first milestone is a minimal composition loop proving the family bricks
-compose with acceptable friction.
+The project is being reframed from a code-work executor to the deliberation-only dossier model.
+The active OpenSpec change is `reframe-ringi-deliberation`; the existing execution CLI is not the
+future product contract.
 
 ## Architecture
 
-- `PROJECT.md` — vision, the invariants to protect, non-goals.
-- `AGENTS.md` — operating protocol and the Definition of Done.
-- `BACKLOG.md` — the bet, the phased plan, seam design, and the family-dependency stance.
+- `PROJECT.md` — vision, invariants, and non-goals.
+- `AGENTS.md` — operating protocol and Definition of Done.
+- `BACKLOG.md` — recorded decisions and deferred work.
 - `openspec/specs/` — shipped requirements.
 
 ## License
