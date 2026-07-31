@@ -2,7 +2,42 @@
 
 ## Purpose
 
-(Generated)
+Rendering a terminal dossier's archive: a human-readable, integrity-bound record of its final SSOT
+and every recorded event — public claims and sealed evaluator reasoning alike — per `PROJECT.md`'s
+Archive and Sealed-evaluation invariants. A record only: it grants no execution authority and
+triggers no workspace effect.
 
 ## Requirements
 
+### Requirement: A rendered archive includes every recorded event
+
+`render_archive` SHALL render every event recorded for the dossier, in commit order: every
+`Public` event's content under a Public Event Index, and every `Sealed` event's evaluator and
+reasoning under a Sealed Audit Section. Neither section SHALL be omitted; an empty section SHALL
+render an explicit placeholder rather than disappearing.
+
+#### Scenario: Public events render in commit order
+
+- **WHEN** a dossier has recorded public events across multiple turns
+- **THEN** the rendered archive's Public Event Index lists their content in the order they were committed
+
+#### Scenario: Sealed evaluations render for human audit
+
+- **WHEN** a dossier has a sealed evaluator-reasoning event recorded
+- **THEN** the rendered archive's Sealed Audit Section includes that evaluator and its reasoning
+
+#### Scenario: A dossier with no events of a kind still renders that section
+
+- **WHEN** a dossier has no sealed events (or no public events)
+- **THEN** the corresponding section still renders, with an explicit placeholder noting none exist
+
+### Requirement: The archive's integrity digest covers the rendered event content
+
+The SHA-256 integrity digest appended to a rendered archive SHALL be computed over the full
+rendered text, including the now-real Public Event Index and Sealed Audit Section content, so the
+digest is not vulnerable to those sections having been tampered with after rendering.
+
+#### Scenario: The digest changes if rendered event content changes
+
+- **WHEN** two archive renderings of the same dossier differ only in their Public Event Index or Sealed Audit Section content
+- **THEN** their integrity digests differ

@@ -211,6 +211,90 @@ impl DossierStore {
         Ok(count > 0)
     }
 
+    /// Every event recorded for `dossier_id`, in commit order. `coordinate` is always `None`:
+    /// the stored `idempotency_key` is a one-way string derived from an `InvocationCoordinate`
+    /// (see `EventRow`), not a serialization of it, so the original coordinate cannot be
+    /// reconstructed — callers needing event *content* (an archive, an audit view) do not need it
+    /// back.
+    pub fn events_for_dossier(
+        &self,
+        dossier_id: &str,
+    ) -> Result<Vec<crate::event::Event>, StoreError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, timestamp, visibility, payload_type, payload_content, evaluator, reasoning
+             FROM events WHERE dossier_id = ? ORDER BY _rowid_ ASC",
+        )?;
+        let rows = stmt.query_map(params![dossier_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, Option<String>>(5)?,
+                row.get::<_, Option<String>>(6)?,
+            ))
+        })?;
+
+        let mut events = Vec::new();
+        for row in rows {
+            let (id, timestamp, visibility, payload_type, payload_content, evaluator, reasoning) =
+                row?;
+            let id = Uuid::parse_str(&id).map_err(|error| {
+                StoreError::CorruptState(format!("event {id} has an invalid UUID: {error}"))
+            })?;
+            let visibility = match visibility.as_str() {
+                "public" => crate::event::EventVisibility::Public,
+                "sealed" => crate::event::EventVisibility::Sealed,
+                other => {
+                    return Err(StoreError::CorruptState(format!(
+                        "event {id} has an unknown visibility: {other}"
+                    )));
+                }
+            };
+            let payload = match payload_type.as_str() {
+                "raw_transcript" => {
+                    crate::event::EventPayload::RawTranscript(payload_content.ok_or_else(|| {
+                        StoreError::CorruptState(format!("event {id} is missing payload_content"))
+                    })?)
+                }
+                "synthesis" => {
+                    crate::event::EventPayload::Synthesis(payload_content.ok_or_else(|| {
+                        StoreError::CorruptState(format!("event {id} is missing payload_content"))
+                    })?)
+                }
+                "public_record" => {
+                    crate::event::EventPayload::PublicRecord(payload_content.ok_or_else(|| {
+                        StoreError::CorruptState(format!("event {id} is missing payload_content"))
+                    })?)
+                }
+                "sealed_evaluation" => crate::event::EventPayload::SealedEvaluation {
+                    evaluator: evaluator.ok_or_else(|| {
+                        StoreError::CorruptState(format!("event {id} is missing evaluator"))
+                    })?,
+                    reasoning: reasoning.ok_or_else(|| {
+                        StoreError::CorruptState(format!("event {id} is missing reasoning"))
+                    })?,
+                },
+                other => {
+                    return Err(StoreError::CorruptState(format!(
+                        "event {id} has an unknown payload_type: {other}"
+                    )));
+                }
+            };
+            events.push(crate::event::Event {
+                id,
+                timestamp: u64::try_from(timestamp).map_err(|_| {
+                    StoreError::CorruptState(format!("event {id} has a negative timestamp"))
+                })?,
+                visibility,
+                payload,
+                coordinate: None,
+            });
+        }
+        Ok(events)
+    }
+
     pub fn get_latest_revision(
         &self,
         dossier_id: &str,
