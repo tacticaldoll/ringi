@@ -59,16 +59,17 @@ pub fn submit_command(id: &str, store: &mut DossierStore) -> anyhow::Result<()> 
     store.insert_dossier(id, &state_json)?;
 
     // Create initial revision from the dossier body
-    let initial_revision = crate::revision::Revision {
+    let mut initial_revision = crate::revision::Revision {
         revision_id: uuid::Uuid::new_v4(),
         parent_digest: None,
-        content_digest: crate::revision::Digest("initial-digest".into()),
+        content_digest: crate::revision::Digest(String::new()),
         original_proposal: parts[2].trim().to_string(),
         current_understanding: parts[2].trim().to_string(),
         positions: vec![],
         dissents: vec![],
         risks: vec![],
     };
+    initial_revision.content_digest = initial_revision.compute_digest();
     store.commit_successor_revision(id, None, &initial_revision, &[])?;
 
     println!("Submitted dossier {}", id);
@@ -195,4 +196,41 @@ pub fn inspect_command(id: &str, store: &DossierStore) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Mutates the process's current directory for the duration of the test (submit_command
+    // reads/writes dossier files relative to CWD). Safe today because no other test in this
+    // crate depends on a relative path; a future one that does would race with it.
+    #[test]
+    fn test_submit_computes_a_real_content_digest() {
+        let dir = std::env::temp_dir().join(format!("ringi-submit-cli-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let original_cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&dir).unwrap();
+
+        let draft = Frontmatter::new_draft();
+        let id = draft.id.to_string();
+        std::fs::create_dir_all(dossiers_dir()).unwrap();
+        let content = format!(
+            "---\n{}---\n\nSome proposal body\n",
+            serialize_frontmatter(&draft).unwrap()
+        );
+        std::fs::write(dossiers_dir().join(format!("{}.md", id)), content).unwrap();
+
+        let mut store = DossierStore::open(dir.join("store.sqlite")).unwrap();
+        let result = submit_command(&id, &mut store);
+
+        std::env::set_current_dir(&original_cwd).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+
+        result.unwrap();
+        let revision = store.get_latest_revision(&id).unwrap().unwrap();
+        assert_ne!(revision.content_digest.0, "initial-digest");
+        assert_eq!(revision.content_digest, revision.compute_digest());
+    }
 }
