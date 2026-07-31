@@ -11,7 +11,6 @@ repository.workspace = true
 pacta.workspace = true
 pacta-memory.workspace = true
 suunta.workspace = true
-shaahid.workspace = true
 cadw.workspace = true
 uuid.workspace = true
 rusqlite.workspace = true

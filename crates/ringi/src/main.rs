@@ -4,10 +4,12 @@
 //! draft → submit → answer → arbitrate → decide → archive: respondents answer bounded
 //! questions, an independent arbitrator maintains the durable revision, and a human records the
 //! final decision. The hard mechanics it composes rather than reimplements: durable
-//! claim/settle around each Agent-CLI invocation (pacta, via `registry`), and mechanical
-//! convergence over the residual (suunta, via `convergence`). Exactly-once invocation
-//! idempotency (shaahid) is not yet attached — see `BACKLOG.md`'s Family Dependency Stance.
-//! See `PROJECT.md`.
+//! claim/settle around each Agent-CLI invocation (pacta, via `registry`), mechanical convergence
+//! over the residual (suunta, via `convergence`), and atomic batch-fold validation of a `Move`
+//! batch (cadw, via `residual_ledger`). Exactly-once invocation idempotency (shaahid) is assessed
+//! and declined, not merely deferred — `InvocationCoordinate`'s own content-derived identity
+//! already leaves no gap shaahid's identity/content drift detection would close; see
+//! `BACKLOG.md`'s Family Dependency Stance. See `PROJECT.md`.
 //!
 //! This binary is the dossier command surface.
 

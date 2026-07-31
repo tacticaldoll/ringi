@@ -114,8 +114,9 @@ than relabelling them.
 
 ## Family Dependency Stance
 
-Pacta, suunta, shaahid, and (as of this adoption) cadw are sibling mechanisms. Ringi retains each
-only if the new domain exercises its public contract honestly:
+Pacta, suunta, and cadw are the sibling mechanisms ringi actually retains; shaahid was assessed
+and declined (see below). Ringi retains each only if the new domain exercises its public contract
+honestly:
 
 - **cadw owns atomic batch-fold validation over addressable targets.** `crate::residual_ledger`
   composes `cadw::Ledger` (the published facade, matching `pacta`/`suunta`/`shaahid`'s own
@@ -137,18 +138,21 @@ only if the new domain exercises its public contract honestly:
   projects a revision's open dissents, risks, and (since `Motion` shipped) questions onto a suunta
   `Bearing` and reports readiness from `Residual::is_converged()`; readiness is never an agent
   claim.
-- **shaahid is assessed and deferred, not merely unattached — re-assessed after `Motion` shipped,
-  Defer still holds.** `InvocationCoordinate::input_digest` is still a real content hash — now
-  covering `original_proposal`, `current_understanding`, `positions`, `dissents`, `risks`, and
-  `questions` — computed from whatever revision content the invocation's prompt was actually built
-  from, exactly as before `Motion`. Coordinate identity and content remain the same value; shaahid's
-  `Seal`/`Fingerprint` contradiction detection still has no gap to fill. The retry-drift failure
-  mode it exists to catch is handled structurally: a coordinate reclaimed after release recomputes
-  its `input_digest` from the current revision, so a retry against genuinely different content
-  produces a genuinely different coordinate. **Re-open this only if a future coordinate scheme
-  deliberately goes coarser than a full content hash** (e.g. for `Prompt-width granularity`'s narrow
-  variant, not yet designed) — do not assume Defer survives a coordinate-scheme change made without
-  revisiting this.
+- **shaahid is assessed and declined, not merely unattached — re-assessed after `Motion` shipped
+  and again after Conditions folded into the residual model, Decline still holds. The dependency
+  itself has been removed (2026-07-30, `remove-unused-shaahid-dependency`)**, after sitting as
+  compiled dead weight (declared in `Cargo.toml`, never once imported in code) since before this
+  reasoning was first written. `InvocationCoordinate::input_digest` is still a real content hash —
+  now covering `original_proposal`, `current_understanding`, `positions`, `dissents`, `risks`,
+  `questions`, and `conditions` — computed from whatever revision content the invocation's prompt
+  was actually built from, exactly as before `Motion`. Coordinate identity and content remain the
+  same value; shaahid's `Seal`/`Fingerprint` contradiction detection still has no gap to fill. The
+  retry-drift failure mode it exists to catch is handled structurally: a coordinate reclaimed after
+  release recomputes its `input_digest` from the current revision, so a retry against genuinely
+  different content produces a genuinely different coordinate. **Re-open this only if a future
+  coordinate scheme deliberately goes coarser than a full content hash** (e.g. for `Prompt-width
+  granularity`'s narrow variant, not yet designed) — do not assume Decline survives a
+  coordinate-scheme change made without revisiting this; re-add the dependency then, not before.
 
 No dependency is retained for historical loyalty. Ringi must not recreate any retained mechanism.
 
