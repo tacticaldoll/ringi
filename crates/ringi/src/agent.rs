@@ -10,12 +10,10 @@
 //! with arguments, never through a shell.
 
 use std::collections::HashMap;
-use std::io::{Read, Write};
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
 use std::time::Duration;
 
-use wait_timeout::ChildExt;
+use crate::exec;
 
 /// Which agent role an invocation is for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -86,6 +84,16 @@ impl std::error::Error for AgentError {
     }
 }
 
+impl From<exec::ExecError> for AgentError {
+    fn from(error: exec::ExecError) -> Self {
+        match error {
+            exec::ExecError::Spawn(error) => Self::Spawn(error),
+            exec::ExecError::TimedOut => Self::TimedOut,
+            exec::ExecError::Io(error) => Self::Io(error),
+        }
+    }
+}
+
 /// The seam by which ringi invokes an Agent CLI. Callers depend on this, never on a specific
 /// CLI's flags.
 pub trait AgentAdapter {
@@ -112,17 +120,6 @@ impl SubprocessAdapter {
     }
 }
 
-/// A minimized base environment: the parent's `PATH` (so programs resolve) and a stable
-/// locale — nothing else, so ambient secrets do not leak by default. Full redaction is the
-/// isolation phase.
-fn minimal_base_env() -> Vec<(String, String)> {
-    let mut env = vec![("LANG".to_string(), "C".to_string())];
-    if let Ok(path) = std::env::var("PATH") {
-        env.push(("PATH".to_string(), path));
-    }
-    env
-}
-
 /// Parse the agent's structured output: the last line of stdout that is a valid JSON value
 /// (agents may print logs before it). Best-effort — absence yields `None`.
 fn parse_structured(stdout: &str) -> Option<serde_json::Value> {
@@ -134,66 +131,21 @@ fn parse_structured(stdout: &str) -> Option<serde_json::Value> {
 
 impl AgentAdapter for SubprocessAdapter {
     fn run(&self, request: AgentRequest) -> Result<AgentResponse, AgentError> {
-        // program + args, never a shell.
-        let mut child = Command::new(&self.program)
-            .args(&self.args)
-            .current_dir(&request.workspace)
-            .env_clear()
-            .envs(minimal_base_env())
-            .envs(&request.env)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(AgentError::Spawn)?;
-
-        // Service all three pipes on their own threads so none can fill and deadlock the
-        // child: feeding the prompt to stdin, and draining stdout/stderr, all proceed
-        // concurrently while the main thread waits on the timeout.
-        let mut stdin_pipe = child.stdin.take().expect("stdin piped");
-        let prompt = request.prompt;
-        std::thread::spawn(move || {
-            let _ = stdin_pipe.write_all(prompt.as_bytes());
-            // stdin_pipe dropped here -> closed, so an agent reading stdin sees EOF.
-        });
-        let mut out_pipe = child.stdout.take().expect("stdout piped");
-        let mut err_pipe = child.stderr.take().expect("stderr piped");
-        let out_handle = std::thread::spawn(move || {
-            let mut buf = Vec::new();
-            let _ = out_pipe.read_to_end(&mut buf);
-            buf
-        });
-        let err_handle = std::thread::spawn(move || {
-            let mut buf = Vec::new();
-            let _ = err_pipe.read_to_end(&mut buf);
-            buf
-        });
-
-        let status = match child
-            .wait_timeout(request.timeout)
-            .map_err(AgentError::Io)?
-        {
-            Some(status) => status,
-            None => {
-                let _ = child.kill();
-                let _ = child.wait();
-                // Return promptly; the detached drain threads finish once the killed child's
-                // pipes close. A shell-wrapper agent that spawns un-exec'd grandchildren can
-                // keep a pipe open — full process-tree teardown (process groups) is the
-                // isolation phase (see BACKLOG); this bounds the invocation, which is the
-                // contract here.
-                return Err(AgentError::TimedOut);
-            }
-        };
-
-        let stdout = String::from_utf8_lossy(&out_handle.join().unwrap_or_default()).into_owned();
-        let stderr = String::from_utf8_lossy(&err_handle.join().unwrap_or_default()).into_owned();
-        let structured = parse_structured(&stdout);
-
+        // Compose the shared subprocess primitive (program+args, never a shell; minimized env;
+        // timeout-bounded; concurrent pipe drain). The prompt is delivered on stdin.
+        let output = exec::run(
+            &self.program,
+            &self.args,
+            &request.workspace,
+            &request.env,
+            &request.prompt,
+            request.timeout,
+        )?;
+        let structured = parse_structured(&output.stdout);
         Ok(AgentResponse {
-            exit_code: status.code(),
-            stdout,
-            stderr,
+            exit_code: output.exit_code,
+            stdout: output.stdout,
+            stderr: output.stderr,
             structured,
         })
     }
