@@ -44,4 +44,6 @@ Note the handoff spec that seeded ringi drifts here ("workflow orchestrator", a
 `scripts/naming-guard.sh` fails if a banned word names a `struct`/`enum`/`trait`/`type`/`mod`
 in the Rust sources; it runs in the Definition of Done (`AGENTS.md`). It is deliberately
 high-precision (declarations only) so it does not false-positive on prose or CLI vocabulary;
-the soft cases above stay review-governed.
+the soft cases above stay review-governed. `crates/ringi/tests/architecture.rs` (via the
+`tianheng` dev-dependency) mechanically enforces the seam rule's other half — that `suunta` is
+imported only from `crate::convergence` — and runs as part of `cargo test --workspace`.

@@ -24,3 +24,4 @@ sha2 = "0.11.0"
 
 [dev-dependencies]
 pacta-conformance.workspace = true
+tianheng = "0.3.0"
