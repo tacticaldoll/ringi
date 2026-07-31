@@ -72,6 +72,35 @@ fn minimal_base_env() -> Vec<(String, String)> {
     env
 }
 
+/// Spawn a child, tolerating a transient `ETXTBSY` under test.
+///
+/// In production this is a single `spawn()` — ringi executes pre-existing Agent CLIs and
+/// verification programs, never a file it just wrote, so `ETXTBSY` ("text file busy") does not
+/// arise. The test suite, however, writes fake-agent/check scripts and executes them under a
+/// parallel harness: a concurrent test's fork can duplicate a writer's still-open fd to the
+/// program file (a fork child holds it until it execs), so a just-written script can briefly
+/// read as open-for-writing and `execve` returns `ETXTBSY`. That race is a property of the test
+/// setup, not the product, so the brief retry is compiled only under `cfg(test)`; the shipped
+/// spawn path stays a single unconditional attempt.
+fn spawn_resilient<F>(spawn: F) -> std::io::Result<std::process::Child>
+where
+    F: Fn() -> std::io::Result<std::process::Child>,
+{
+    #[cfg(test)]
+    {
+        // ETXTBSY window = another thread's fork→exec; a few short retries clear it.
+        for _ in 0..100 {
+            match spawn() {
+                Err(e) if e.raw_os_error() == Some(26) => {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                result => return result,
+            }
+        }
+    }
+    spawn()
+}
+
 /// Run `program` with `args` in `workspace`, feeding `stdin` and then closing it (so a reader
 /// sees EOF), bounded by `timeout`. Spawned as program + arguments, **never through a shell**,
 /// over a minimized base environment extended by `env`.
@@ -87,17 +116,20 @@ pub fn run(
     timeout: Duration,
 ) -> Result<Output, ExecError> {
     // program + args, never a shell.
-    let mut child = Command::new(program)
-        .args(args)
-        .current_dir(workspace)
-        .env_clear()
-        .envs(minimal_base_env())
-        .envs(env)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(ExecError::Spawn)?;
+    let spawn = || {
+        Command::new(program)
+            .args(args)
+            .current_dir(workspace)
+            .env_clear()
+            .envs(minimal_base_env())
+            .envs(env)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+    };
+
+    let mut child = spawn_resilient(spawn).map_err(ExecError::Spawn)?;
 
     // Service all three pipes on their own threads so none can fill and deadlock the child:
     // feeding stdin, and draining stdout/stderr, all proceed concurrently while the main
