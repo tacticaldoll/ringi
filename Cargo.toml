@@ -8,6 +8,8 @@ edition = "2024"
 rust-version = "1.88"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/tacticaldoll/ringi"
+keywords = ["deliberation", "dossier", "arbitration", "cli", "agent"]
+categories = ["command-line-utilities"]
 
 [workspace.dependencies]
 # Published family facades composed by ringi: pacta owns lifecycle, suunta owns convergence,
