@@ -3,9 +3,11 @@
 ## Purpose
 
 Ringi's SQLite-backed `pacta::Registry` — a durable claim/settle authority that satisfies
-pacta's contract (conformance-proven) and over which the reconcile loop runs, so a run's step
-lifecycle survives a restart. It is the sans-I/O seam made real: pacta owns the contract,
-ringi owns the I/O.
+pacta's contract (conformance-proven), over which each respondent, arbitrator, and
+condition-evaluator invocation in the deliberation domain is claimed before it runs and settled
+after, so a crash between invoking an Agent CLI and committing its result is durably
+distinguishable from a completed attempt. It is the sans-I/O seam made real: pacta owns the
+contract, ringi owns the I/O.
 
 ## Requirements
 
@@ -59,17 +61,3 @@ receive its instant through pacta's default operation and shared transition.
 - **WHEN** claim or a transition would persist a pacta timestamp greater than SQLite's signed 64-bit integer range
 - **THEN** the registry returns a distinct range error and changes no lifecycle row rather than saturating the instant and changing its boundary
 
-### Requirement: The Reconcile Loop Runs Over A Durable Backend
-The reconcile loop SHALL run over the pacta 0.2.2 `SqliteRegistry` without changing its planning,
-witnessing, retry, convergence, or settlement wiring, so the composition proven over the reference
-backend persists a run's step lifecycle. The dependency migration SHALL preserve the existing table
-and stored-row representation; it MAY add an idempotent claim-selection index, which SHALL be
-provisioned when an existing database opens without rewriting lifecycle data.
-
-#### Scenario: The composition is backend-agnostic
-- **WHEN** the reconcile loop runs over the upgraded `SqliteRegistry` instead of the reference backend
-- **THEN** it converges with the same exactly-once and retry behavior, now durably
-
-#### Scenario: State survives a restart
-- **WHEN** a file-backed registry holds a claim, is dropped, and is reopened from the same file after the dependency upgrade
-- **THEN** the held state remains readable and is reclaimable after its lease lapses after the additive index is provisioned, without a table, row-format, or data migration

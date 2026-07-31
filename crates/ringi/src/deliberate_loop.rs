@@ -10,12 +10,39 @@ use crate::deliberation::{
 };
 use crate::dossier::{LifecycleState, SubmittedDossier};
 use crate::event::{Event, EventPayload, InvocationCoordinate};
+use crate::registry::SqliteRegistry;
 use crate::store::DossierStore;
+
+/// Claims `coordinate` through `registry`, runs `invoke`, and settles the claim — fulfilled on a
+/// successful (`exit_code == Some(0)`) response, released for an immediate retry under the same
+/// coordinate otherwise — before returning the invocation's result. Centralizes the
+/// claim-before-invoke/settle-after checkpoint so the three invocation sites (respondent,
+/// arbitrator, condition-evaluator) do not each repeat it.
+fn claimed_invoke(
+    registry: &SqliteRegistry,
+    coordinate: &InvocationCoordinate,
+    invoke: impl FnOnce() -> Result<crate::agent::AgentResponse, crate::agent::AgentError>,
+) -> anyhow::Result<crate::agent::AgentResponse> {
+    let ticket = registry.claim_invocation(coordinate)?.with_context(|| {
+        format!(
+            "cannot claim invocation {} — already settled or held under an unexpired lease",
+            coordinate.idempotency_key()
+        )
+    })?;
+
+    let outcome = invoke();
+    match &outcome {
+        Ok(response) if response.exit_code == Some(0) => registry.settle_fulfilled(ticket)?,
+        _ => registry.release_for_retry(ticket)?,
+    }
+    Ok(outcome?)
+}
 
 pub fn run_deliberation(
     dossier_id: &str,
     dossier_json: &str,
     store: &mut DossierStore,
+    registry: &SqliteRegistry,
 ) -> anyhow::Result<()> {
     let mut dossier: SubmittedDossier = serde_json::from_str(dossier_json)?;
 
@@ -68,6 +95,13 @@ pub fn run_deliberation(
         let question = "Please review the unresolved dissents and risks and provide a claim on how to proceed.".to_string();
         let respondent_prompt = build_respondent_prompt(&question, &current_revision);
 
+        let respondent_coordinate = InvocationCoordinate {
+            dossier_id: Uuid::parse_str(dossier_id).unwrap_or_default(),
+            role: "respondent".to_string(),
+            input_digest: current_revision.content_digest.clone(),
+            turn,
+            attempt: 1,
+        };
         let respondent = SubprocessAdapter::new(respondent_program.clone(), vec![]);
         let req = AgentRequest {
             role: AgentRole::Respondent,
@@ -79,7 +113,7 @@ pub fn run_deliberation(
         };
 
         println!("Turn {}: Invoking respondent...", turn);
-        let res = respondent.run(req)?;
+        let res = claimed_invoke(registry, &respondent_coordinate, || respondent.run(req))?;
         if res.exit_code != Some(0) {
             bail!("Respondent failed: {}", res.stderr);
         }
@@ -92,17 +126,18 @@ pub fn run_deliberation(
             crate::event::EventPayload::PublicRecord(claim.clone()),
             turn as u64 * 1000,
         );
-        respondent_event.coordinate = Some(crate::event::InvocationCoordinate {
-            dossier_id: Uuid::parse_str(dossier_id).unwrap_or_default(),
-            role: "respondent".to_string(),
-            input_digest: current_revision.content_digest.clone(),
-            turn,
-            attempt: 1,
-        });
+        respondent_event.coordinate = Some(respondent_coordinate);
 
         println!("Turn {}: Building arbitrator prompt...", turn);
         let arbitrator_prompt = build_arbitrator_prompt(&current_revision, &[claim]);
 
+        let arbitrator_coordinate = InvocationCoordinate {
+            dossier_id: Uuid::parse_str(dossier_id).unwrap_or_default(),
+            role: "arbitrator".to_string(),
+            input_digest: current_revision.content_digest.clone(),
+            turn,
+            attempt: 1,
+        };
         let arbitrator = SubprocessAdapter::new(arbitrator_program.clone(), vec![]);
         let arb_agent_req = AgentRequest {
             role: AgentRole::Arbitrator,
@@ -114,7 +149,9 @@ pub fn run_deliberation(
         };
 
         println!("Turn {}: Invoking arbitrator...", turn);
-        let arb_res = arbitrator.run(arb_agent_req)?;
+        let arb_res = claimed_invoke(registry, &arbitrator_coordinate, || {
+            arbitrator.run(arb_agent_req)
+        })?;
         if arb_res.exit_code != Some(0) {
             bail!("Arbitrator failed: {}", arb_res.stderr);
         }
@@ -181,6 +218,7 @@ pub fn evaluate_conditions(
     dossier_id: &str,
     dossier_json: &str,
     store: &mut DossierStore,
+    registry: &SqliteRegistry,
 ) -> anyhow::Result<()> {
     let mut dossier: SubmittedDossier = serde_json::from_str(dossier_json)?;
 
@@ -203,6 +241,13 @@ pub fn evaluate_conditions(
         }
 
         let prompt = build_condition_evaluator_prompt(&dossier.conditions[index], &revision);
+        let coordinate = InvocationCoordinate {
+            dossier_id: Uuid::parse_str(dossier_id).unwrap_or_default(),
+            role: format!("condition_evaluator:{}", dossier.conditions[index].id),
+            input_digest: revision.content_digest.clone(),
+            turn: index as u32,
+            attempt: 1,
+        };
         let evaluator = SubprocessAdapter::new(evaluator_program.clone(), vec![]);
         let req = AgentRequest {
             role: AgentRole::ConditionEvaluator,
@@ -213,7 +258,7 @@ pub fn evaluate_conditions(
             env: HashMap::new(),
         };
 
-        let res = evaluator.run(req)?;
+        let res = claimed_invoke(registry, &coordinate, || evaluator.run(req))?;
         if res.exit_code != Some(0) {
             bail!(
                 "Condition evaluator failed for condition {}: {}",
@@ -234,13 +279,7 @@ pub fn evaluate_conditions(
             },
             index as u64,
         );
-        evaluation_event.coordinate = Some(InvocationCoordinate {
-            dossier_id: Uuid::parse_str(dossier_id).unwrap_or_default(),
-            role: format!("condition_evaluator:{}", dossier.conditions[index].id),
-            input_digest: revision.content_digest.clone(),
-            turn: index as u32,
-            attempt: 1,
-        });
+        evaluation_event.coordinate = Some(coordinate);
 
         if output.verdict == ConditionVerdict::True {
             dossier.conditions[index].is_met = true;
@@ -272,6 +311,12 @@ mod tests {
         std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
         path
+    }
+
+    /// A registry over the same file `path` the test's `DossierStore` uses — two connections to
+    /// one file, matching production.
+    fn test_registry(path: &std::path::Path) -> SqliteRegistry {
+        SqliteRegistry::open(path).unwrap()
     }
 
     fn submitted(id: Uuid, respondent: &str, arbitrator: &str, max_turns: u32) -> SubmittedDossier {
@@ -326,6 +371,9 @@ mod tests {
 
     #[test]
     fn a_deliberated_converged_revision_transitions_on_resume() {
+        let _guard = crate::PROCESS_CWD_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let dir = std::env::temp_dir();
         let path = dir.join(format!("ringi-loop-resume-{}.sqlite", std::process::id()));
         let _ = std::fs::remove_file(&path);
@@ -333,6 +381,7 @@ mod tests {
         let id = Uuid::new_v4();
         let id_str = id.to_string();
         let mut store = DossierStore::open(&path).unwrap();
+        let registry = test_registry(&path);
         let dossier = submitted(id, "unused", "unused", 5);
         let json = serde_json::to_string(&dossier).unwrap();
         store.insert_dossier(&id_str, &json).unwrap();
@@ -353,7 +402,7 @@ mod tests {
             .commit_successor_revision(&id_str, None, &converged, &[])
             .unwrap();
 
-        run_deliberation(&id_str, &json, &mut store).unwrap();
+        run_deliberation(&id_str, &json, &mut store, &registry).unwrap();
 
         assert_eq!(state_of(&store, &id_str), LifecycleState::ReadyForDecision);
         let _ = std::fs::remove_file(&path);
@@ -361,6 +410,9 @@ mod tests {
 
     #[test]
     fn a_fresh_empty_dossier_deliberates_before_converging() {
+        let _guard = crate::PROCESS_CWD_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let dir = std::env::temp_dir();
         let path = dir.join(format!("ringi-loop-fresh-{}.sqlite", std::process::id()));
         let _ = std::fs::remove_file(&path);
@@ -380,6 +432,7 @@ mod tests {
         let arbitrator = fake_agent("arb2.sh", &format!("echo '{successor_json}'"));
 
         let mut store = DossierStore::open(&path).unwrap();
+        let registry = test_registry(&path);
         let dossier = submitted(
             id,
             respondent.to_str().unwrap(),
@@ -403,7 +456,7 @@ mod tests {
             .commit_successor_revision(&id_str, None, &initial, &[])
             .unwrap();
 
-        run_deliberation(&id_str, &json, &mut store).unwrap();
+        run_deliberation(&id_str, &json, &mut store, &registry).unwrap();
 
         // A turn actually ran (understanding advanced past the root), then it converged.
         let latest = store.get_latest_revision(&id_str).unwrap().unwrap();
@@ -414,6 +467,9 @@ mod tests {
 
     #[test]
     fn a_fixture_turn_parses_single_line_json_and_commits_a_successor() {
+        let _guard = crate::PROCESS_CWD_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let dir = std::env::temp_dir();
         let path = dir.join(format!("ringi-loop-turn-{}.sqlite", std::process::id()));
         let _ = std::fs::remove_file(&path);
@@ -436,6 +492,7 @@ mod tests {
         let arbitrator = fake_agent("arb.sh", &format!("echo '{successor_json}'"));
 
         let mut store = DossierStore::open(&path).unwrap();
+        let registry = test_registry(&path);
         let dossier = submitted(
             id,
             respondent.to_str().unwrap(),
@@ -463,7 +520,7 @@ mod tests {
             .commit_successor_revision(&id_str, None, &initial, &[])
             .unwrap();
 
-        run_deliberation(&id_str, &json, &mut store).unwrap();
+        run_deliberation(&id_str, &json, &mut store, &registry).unwrap();
 
         // The turn ran: a successor revision was committed and its understanding advanced.
         let latest = store.get_latest_revision(&id_str).unwrap().unwrap();
@@ -471,6 +528,72 @@ mod tests {
         // The unresolved dissent persists, so the dossier has not converged.
         assert_eq!(state_of(&store, &id_str), LifecycleState::Deliberating);
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn an_already_settled_coordinate_is_not_reinvoked() {
+        let _guard = crate::PROCESS_CWD_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("ringi-loop-settled-{}.sqlite", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+
+        let id = Uuid::new_v4();
+        let id_str = id.to_string();
+        let marker = dir.join(format!("ringi-loop-settled-marker-{}", std::process::id()));
+        let _ = std::fs::remove_file(&marker);
+        // If the respondent is ever actually invoked, it leaves a marker file behind.
+        let respondent = fake_agent(
+            "resp-should-not-run.sh",
+            &format!("touch {}\necho 'should not run'", marker.display()),
+        );
+
+        let mut store = DossierStore::open(&path).unwrap();
+        let registry = test_registry(&path);
+        let dossier = submitted(id, respondent.to_str().unwrap(), "unused", 1);
+        let json = serde_json::to_string(&dossier).unwrap();
+        store.insert_dossier(&id_str, &json).unwrap();
+
+        let initial = Revision {
+            revision_id: Uuid::new_v4(),
+            parent_digest: None,
+            content_digest: Digest("init".into()),
+            original_proposal: "p".into(),
+            current_understanding: "u".into(),
+            positions: vec![],
+            dissents: vec![],
+            risks: vec![],
+        };
+        store
+            .commit_successor_revision(&id_str, None, &initial, &[])
+            .unwrap();
+
+        // Pre-claim and fulfill exactly the coordinate turn 1's respondent invocation would use,
+        // simulating "this attempt already ran and was recorded as settled" without a matching
+        // event/revision commit having happened (the crash-window this change protects).
+        let coordinate = InvocationCoordinate {
+            dossier_id: id,
+            role: "respondent".to_string(),
+            input_digest: initial.content_digest.clone(),
+            turn: 1,
+            attempt: 1,
+        };
+        let ticket = registry
+            .claim_invocation(&coordinate)
+            .unwrap()
+            .expect("a fresh coordinate should be claimable");
+        registry.settle_fulfilled(ticket).unwrap();
+
+        let err = run_deliberation(&id_str, &json, &mut store, &registry).unwrap_err();
+        assert!(err.to_string().contains("cannot claim invocation"));
+        assert!(
+            !marker.exists(),
+            "the respondent must never be invoked for an already-settled coordinate"
+        );
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&marker);
     }
 
     fn base_revision() -> Revision {
@@ -488,6 +611,9 @@ mod tests {
 
     #[test]
     fn a_true_verdict_marks_the_condition_met() {
+        let _guard = crate::PROCESS_CWD_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let dir = std::env::temp_dir();
         let path = dir.join(format!("ringi-eval-true-{}.sqlite", std::process::id()));
         let _ = std::fs::remove_file(&path);
@@ -501,6 +627,7 @@ mod tests {
         );
 
         let mut store = DossierStore::open(&path).unwrap();
+        let registry = test_registry(&path);
         let dossier = ready_for_decision_with_conditions(
             id,
             evaluator.to_str().unwrap(),
@@ -512,7 +639,7 @@ mod tests {
             .commit_successor_revision(&id_str, None, &base_revision(), &[])
             .unwrap();
 
-        evaluate_conditions(&id_str, &json, &mut store).unwrap();
+        evaluate_conditions(&id_str, &json, &mut store, &registry).unwrap();
 
         let state_json = store.get_dossier_state(&id_str).unwrap().unwrap();
         let updated: SubmittedDossier = serde_json::from_str(&state_json).unwrap();
@@ -522,6 +649,9 @@ mod tests {
 
     #[test]
     fn a_false_verdict_leaves_the_condition_unmet() {
+        let _guard = crate::PROCESS_CWD_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let dir = std::env::temp_dir();
         let path = dir.join(format!("ringi-eval-false-{}.sqlite", std::process::id()));
         let _ = std::fs::remove_file(&path);
@@ -534,6 +664,7 @@ mod tests {
         );
 
         let mut store = DossierStore::open(&path).unwrap();
+        let registry = test_registry(&path);
         let dossier = ready_for_decision_with_conditions(
             id,
             evaluator.to_str().unwrap(),
@@ -545,7 +676,7 @@ mod tests {
             .commit_successor_revision(&id_str, None, &base_revision(), &[])
             .unwrap();
 
-        evaluate_conditions(&id_str, &json, &mut store).unwrap();
+        evaluate_conditions(&id_str, &json, &mut store, &registry).unwrap();
 
         let state_json = store.get_dossier_state(&id_str).unwrap().unwrap();
         let updated: SubmittedDossier = serde_json::from_str(&state_json).unwrap();
@@ -555,6 +686,9 @@ mod tests {
 
     #[test]
     fn an_unknown_verdict_leaves_the_condition_unmet() {
+        let _guard = crate::PROCESS_CWD_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let dir = std::env::temp_dir();
         let path = dir.join(format!("ringi-eval-unknown-{}.sqlite", std::process::id()));
         let _ = std::fs::remove_file(&path);
@@ -567,6 +701,7 @@ mod tests {
         );
 
         let mut store = DossierStore::open(&path).unwrap();
+        let registry = test_registry(&path);
         let dossier = ready_for_decision_with_conditions(
             id,
             evaluator.to_str().unwrap(),
@@ -578,7 +713,7 @@ mod tests {
             .commit_successor_revision(&id_str, None, &base_revision(), &[])
             .unwrap();
 
-        evaluate_conditions(&id_str, &json, &mut store).unwrap();
+        evaluate_conditions(&id_str, &json, &mut store, &registry).unwrap();
 
         let state_json = store.get_dossier_state(&id_str).unwrap().unwrap();
         let updated: SubmittedDossier = serde_json::from_str(&state_json).unwrap();
@@ -588,6 +723,9 @@ mod tests {
 
     #[test]
     fn evaluate_conditions_rejects_a_dossier_not_ready_for_decision() {
+        let _guard = crate::PROCESS_CWD_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let dir = std::env::temp_dir();
         let path = dir.join(format!("ringi-eval-badstate-{}.sqlite", std::process::id()));
         let _ = std::fs::remove_file(&path);
@@ -598,15 +736,19 @@ mod tests {
         let json = serde_json::to_string(&dossier).unwrap();
 
         let mut store = DossierStore::open(&path).unwrap();
+        let registry = test_registry(&path);
         store.insert_dossier(&id_str, &json).unwrap();
 
-        let err = evaluate_conditions(&id_str, &json, &mut store).unwrap_err();
+        let err = evaluate_conditions(&id_str, &json, &mut store, &registry).unwrap_err();
         assert!(err.to_string().contains("not ReadyForDecision"));
         let _ = std::fs::remove_file(&path);
     }
 
     #[test]
     fn sealed_evaluator_reasoning_never_reaches_a_respondent_prompt() {
+        let _guard = crate::PROCESS_CWD_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let dir = std::env::temp_dir();
         let path = dir.join(format!("ringi-eval-sealed-{}.sqlite", std::process::id()));
         let _ = std::fs::remove_file(&path);
@@ -619,6 +761,7 @@ mod tests {
         );
 
         let mut store = DossierStore::open(&path).unwrap();
+        let registry = test_registry(&path);
         let dossier = ready_for_decision_with_conditions(
             id,
             evaluator.to_str().unwrap(),
@@ -630,7 +773,7 @@ mod tests {
             .commit_successor_revision(&id_str, None, &base_revision(), &[])
             .unwrap();
 
-        evaluate_conditions(&id_str, &json, &mut store).unwrap();
+        evaluate_conditions(&id_str, &json, &mut store, &registry).unwrap();
 
         let latest = store.get_latest_revision(&id_str).unwrap().unwrap();
         let prompt = build_respondent_prompt("Anything to add?", &latest);
