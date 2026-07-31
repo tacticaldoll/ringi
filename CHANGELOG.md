@@ -64,3 +64,11 @@ _0.1.0 is in development; it has not been released._
   pre-reframe "durable, gated build-review-verify loop" model; rewritten to describe the current
   dossier-deliberation model. A dossier draft file's frontmatter JSON is now always separated from
   both `---` delimiters by a newline, instead of glued as `}---`/`---{` on write and rewrite.
+- A turn whose respondent succeeded but whose arbitrator then failed could never be resumed:
+  retrying re-derived the respondent's already-`Settled` coordinate, which `claimed_invoke`
+  correctly refused to reclaim, blocking the turn one step before the one that actually needed
+  retrying. The respondent's answer is now persisted durably as soon as it succeeds, and a retry
+  reuses it instead of re-invoking the respondent. Also: `apply_arbitration`'s domain validation
+  (dissent/risk retention, `original_proposal` immutability) now runs inside the same claim
+  boundary as the arbitrator's parse — a structurally-valid response that fails that validation
+  releases the claim for retry instead of settling it fulfilled.
