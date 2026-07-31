@@ -1,0 +1,69 @@
+# reconcile-loop Specification
+
+## Purpose
+
+The consumer loop that composes suunta (residual planning and convergence), shaahid
+(exactly-once step execution), and pacta (durable step lifecycle) into a convergent,
+idempotent, durable reconcile of a desired set of steps — the orchestrator emerging from
+composition, with ringi only wiring.
+
+## Requirements
+
+### Requirement: The Reconcile Loop Composes The Family Over Public APIs
+Ringi SHALL reconcile a desired set of steps to done through a consumer loop that composes
+suunta (residual planning and convergence), shaahid (exactly-once step execution), and pacta
+(durable step lifecycle) using only the public APIs of those crates. Ringi SHALL add no
+step-lifecycle state machine, completion calculation, or idempotency scheme of its own — the
+only ringi-owned logic is the loop and thin seam adapters (identity mapping, findings
+translation). If a seam cannot be expressed via a brick's public API, that SHALL be recorded
+as a finding, not worked around by reaching inside.
+
+#### Scenario: The loop reconciles a desired set to done
+- **WHEN** ringi is given a set of desired steps and runs the reconcile loop
+- **THEN** it drives each step through pacta's claim/execute/settle, planning with suunta and witnessing with shaahid, until every step is done
+
+#### Scenario: No brick behavior is reimplemented
+- **WHEN** the reconcile loop needs planning, convergence, idempotency, or lifecycle
+- **THEN** it calls the corresponding brick rather than computing that behavior itself
+
+### Requirement: Convergence Is Decided By Suunta
+The loop SHALL halt as complete only when suunta reports the residual converged, never by a
+ringi-owned completion check. Each cycle SHALL supply suunta a `Sounding` of domain-certified
+satisfaction and coverage findings and act on the returned residual.
+
+#### Scenario: The run ends when suunta converges
+- **WHEN** every desired step is satisfied and nothing is surfaced
+- **THEN** `Residual::is_converged` is true and the loop stops as complete
+
+#### Scenario: A retained step keeps the loop going
+- **WHEN** the residual still contains a step
+- **THEN** the loop performs another cycle rather than declaring completion
+
+### Requirement: Each Step Executes Exactly Once
+A step's side effect SHALL occur exactly once across the whole run, including retries, by
+witnessing the step attempt with shaahid before performing it: a create-attestation performs
+and records; an attach-attestation is a no-op. This is what makes ringi's executor idempotent
+under pacta's at-least-once recovery.
+
+#### Scenario: A retried step still runs once
+- **WHEN** a step is executed, retried, and executed again through the loop
+- **THEN** its side effect occurred exactly once because the second attempt attaches rather than re-performs
+
+### Requirement: A Failed Step Retries Via Deferred Reclaim
+A step that fails an attempt SHALL be retried by releasing its claim with a
+consumer-computed reclaimable instant (`release(retainer, reclaimable_at)`), so it is
+withheld until that instant and then reclaimed — the backoff policy is ringi's, the mechanism
+is pacta's.
+
+#### Scenario: A failed step is withheld then reclaimed
+- **WHEN** a step fails its first attempt and the loop releases it with a future reclaimable instant
+- **THEN** the step is not claimed before that instant and is reclaimed and completed after it
+
+### Requirement: The Composition Is Self-Checked
+The reconcile loop SHALL be exercised by a self-checking test that asserts the run converges,
+each step executed exactly once, and a failed step was withheld then reclaimed, so the bet
+cannot silently regress under the Definition of Done.
+
+#### Scenario: A regressed composition fails the gate
+- **WHEN** the loop no longer converges, double-executes a step, or mishandles retry
+- **THEN** the self-checking test fails under the Definition of Done
