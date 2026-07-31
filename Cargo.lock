@@ -512,7 +512,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
- "shaahid",
  "suunta",
  "tianheng",
  "toml",
@@ -608,21 +607,6 @@ dependencies = [
  "cpufeatures",
  "digest",
 ]
-
-[[package]]
-name = "shaahid"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "74ab5949ba5aecfd5bc5902b7a24c6a4235555523837147eec48904d5a418a08"
-dependencies = [
- "shaahid-contract",
-]
-
-[[package]]
-name = "shaahid-contract"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2b084de5b7879231a44ece4ad9d6edef18e9e83d8aa687f5d49a01b02ee00263"
 
 [[package]]
 name = "shlex"
