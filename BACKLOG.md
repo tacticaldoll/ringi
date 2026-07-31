@@ -27,7 +27,20 @@ than relabelling them.
 - **Spine and leaves:** respondents only answer; a logically separate arbitrator proposes the
   successor *transition*, never the decision; ringi holds and validates the canonical revision and
   never infers state from prose. The agent does not author the whole successor state (mechanism —
-  `Motion` — under Deferred Work).
+  `Motion` — see below).
+- **Structured-move authorship (`Motion`) is decided, not deferred (2026-07-28):** the arbitrator
+  authoring an entire successor `Revision` each turn, rather than declaring discrete moves, is
+  promoted from Deferred Work to a committed direction. Evidence: a real bug this session
+  (`fix(revision): enforce original_proposal immutability across successors`) where the
+  whole-successor JSON silently mutated a field that must never change, caught only by a post-hoc
+  diff — plus the `TEMPORARY STOPGAP` comment already naming the one-line-JSON coupling in
+  `build_arbitrator_prompt` as fragile and destined for removal. This decision is scoped to the
+  authorship mechanism itself: it does **not** also settle `Residual expansion` or `Prompt-width
+  granularity` (still Deferred Work below, now unlocked for design rather than parked) or shaahid's
+  re-assessment (Family Dependency Stance below) — those need their own design/evaluation work
+  before they are themselves decided. `Motion`'s own data model, invocation shape, and
+  apply/validate mechanics are not designed yet; this entry records that ringi has decided to do
+  that design work, not what it will conclude.
 - **Convergence is mechanical, not agent-declared.** Readiness for human decision is computed by
   suunta (`plan_residual(...).is_converged()`) over the residual, never asserted by the arbitrator;
   readiness ceases to be an agent output. An `Unknown` verdict is conservatively retained, so
@@ -68,9 +81,12 @@ domain exercises its public contract honestly:
   `dissents`, `risks`) that `build_respondent_prompt` reads — so a coordinate's identity already
   ties to its content, and shaahid's `Seal`/`Fingerprint` contradiction detection (a drifted
   `Fingerprint` under a repeated `Seal`, or the reverse) has no path to fire today. The reopening
-  trigger: **Motion** or **prompt-width granularity** (both already Deferred Work below) letting an
-  invocation's actual content vary independently of those five fields would reopen this — at that
-  point, re-run the assessment rather than assume the prior Defer still holds.
+  trigger was **Motion** or **prompt-width granularity** letting an invocation's actual content vary
+  independently of those five fields — **Motion is now a Settled Decision (2026-07-28, see
+  above)**, so this trigger has fired in principle. Re-running the assessment is still blocked on
+  `Motion`'s own design landing (its actual invocation-content shape isn't defined yet); do not
+  assume the prior Defer still holds once that design exists, and do not re-run the assessment
+  before it does — there is nothing concrete yet to assess against.
 
 No dependency is retained for historical loyalty. Ringi must not recreate any retained mechanism.
 
@@ -84,20 +100,17 @@ coverage consumer. Any such advance happens in suunta's own repo, never inside a
 
 ## Deferred Work
 
-- **Structured-move authorship (`Motion`):** replace the arbitrator authoring an entire successor
-  `Revision` (and its JSON-or-crash coupling) with a ringi-native `Motion` — a discrete,
-  provenance-bound, individually-validated operation on the residual (resolve dissent, add or close
-  risk, answer question) that the agent *declares* and ringi applies. Absence of a declared move is
-  a no-op, never an inference from prose. Until it lands, a labelled one-line stopgap keeps the
-  arbitrator prompt emitting parseable output so the loop runs.
-- **Prompt-width granularity:** the same `Motion` substrate admits a wide prompt (the agent
-  enumerates and declares many moves in one call) or a narrow one (ringi enumerates the residual and
-  asks one closed question per item). This is prompt width and invocation count, not two
-  architectures; wire it to the Economy/Balanced/Assurance posture rather than choosing globally.
-- **Residual expansion:** for suunta's residual to cover all four categories, open questions and
-  conditions must live in the `Revision` rather than be transient, and risks need stable ids (they
-  are bare strings today) so each residual item carries a `Sigil`. v1 convergence counts dissents
-  and risks only; questions and conditions follow with `Motion`.
+- **Prompt-width granularity:** unlocked (not settled) by `Motion` being decided (Settled
+  Decisions, above) — the same `Motion` substrate would admit a wide prompt (the agent enumerates
+  and declares many moves in one call) or a narrow one (ringi enumerates the residual and asks one
+  closed question per item). This is prompt width and invocation count, not two architectures;
+  wire it to the Economy/Balanced/Assurance posture rather than choosing globally, once `Motion`'s
+  own design exists to wire it against.
+- **Residual expansion:** unlocked (not settled) by `Motion` being decided — for suunta's residual
+  to cover all four categories, open questions and conditions must live in the `Revision` rather
+  than be transient, and risks need stable ids (they are bare strings today) so each residual item
+  carries a `Sigil`. v1 convergence counts dissents and risks only; questions and conditions follow
+  once `Motion`'s design defines how they're declared and applied.
 - **Executor consumer:** sandboxing, repository editing, verification commands, patch application,
   and any consumer of an approved archive require a separate change. They are not hidden inside
   this deliberation MVP.
