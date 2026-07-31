@@ -19,6 +19,7 @@
 /.gemini/
 /.github/copilot-instructions.md
 /.github/prompts/
+/.github/skills/
 /.iflow/
 /.junie/
 /.kilocode/
