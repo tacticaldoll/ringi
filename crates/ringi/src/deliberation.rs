@@ -91,13 +91,22 @@ pub fn apply_arbitration(
     base.apply_moves(output.current_understanding, output.moves)
 }
 
+/// A respondent's claim shown to the arbitrator, with the event id that would justify citing it
+/// as event provenance in a `Move` that requires it (e.g. `AnswerQuestion`'s or
+/// `ResolveDissent`'s `Resolution`) — without the id, the arbitrator can see what was said but has
+/// no identifier through which to reference it as evidence.
+pub struct RespondentClaim {
+    pub event_id: uuid::Uuid,
+    pub text: String,
+}
+
 /// Build the prompt for an arbitrator agent.
 /// It contains the full history (simplified as the current revision for now), unresolved items
 /// with their stable ids (a `Move` targets an existing item by id, and ringi — not the agent —
 /// mints ids for newly-created risks/questions, so the arbitrator has no way to target an item
-/// again in a later turn unless its id is shown here), and recent respondent claims (passed as
-/// events).
-pub fn build_arbitrator_prompt(revision: &Revision, recent_claims: &[String]) -> String {
+/// again in a later turn unless its id is shown here), and recent respondent claims with their
+/// event ids (so the arbitrator can cite one as a `Move`'s provenance).
+pub fn build_arbitrator_prompt(revision: &Revision, recent_claims: &[RespondentClaim]) -> String {
     let mut prompt = String::new();
     prompt.push_str("You are the arbitrator.\n\n");
     prompt.push_str("## Current SSOT\n");
@@ -143,7 +152,7 @@ pub fn build_arbitrator_prompt(revision: &Revision, recent_claims: &[String]) ->
     if !recent_claims.is_empty() {
         prompt.push_str("\n## Recent Respondent Claims\n");
         for claim in recent_claims {
-            prompt.push_str(&format!("- {}\n", claim));
+            prompt.push_str(&format!("- [{}] {}\n", claim.event_id, claim.text));
         }
     }
 
@@ -330,6 +339,33 @@ mod tests {
         assert!(prompt.contains(&dissent_id.to_string()));
         assert!(prompt.contains(&risk_id.to_string()));
         assert!(prompt.contains(&question_id.to_string()));
+    }
+
+    #[test]
+    fn arbitrator_prompt_shows_a_respondent_claims_event_id() {
+        // A Move citing a respondent's claim as provenance (e.g. AnswerQuestion) needs the
+        // claim's event id, not just its text — without it, the arbitrator has no identifier
+        // through which to reference that claim as evidence.
+        let revision = Revision {
+            revision_id: Uuid::new_v4(),
+            parent_digest: None,
+            content_digest: Digest("dig".into()),
+            original_proposal: "Plan".into(),
+            current_understanding: "Plan".into(),
+            positions: vec![],
+            dissents: vec![],
+            risks: vec![],
+            questions: vec![],
+        };
+        let event_id = Uuid::new_v4();
+        let claim = RespondentClaim {
+            event_id,
+            text: "Acme Corp is the supplier we should use.".into(),
+        };
+
+        let prompt = build_arbitrator_prompt(&revision, &[claim]);
+        assert!(prompt.contains(&event_id.to_string()));
+        assert!(prompt.contains("Acme Corp is the supplier we should use."));
     }
 
     #[test]

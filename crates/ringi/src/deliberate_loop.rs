@@ -17,8 +17,9 @@ use uuid::Uuid;
 
 use crate::agent::{AgentAdapter, AgentRequest, AgentRole, SubprocessAdapter};
 use crate::deliberation::{
-    ArbitrationOutput, ConditionEvaluationOutput, ConditionVerdict, apply_arbitration,
-    build_arbitrator_prompt, build_condition_evaluator_prompt, build_respondent_prompt,
+    ArbitrationOutput, ConditionEvaluationOutput, ConditionVerdict, RespondentClaim,
+    apply_arbitration, build_arbitrator_prompt, build_condition_evaluator_prompt,
+    build_respondent_prompt,
 };
 use crate::dossier::{LifecycleState, SubmittedDossier};
 use crate::event::{Event, EventPayload, InvocationCoordinate};
@@ -140,14 +141,15 @@ pub fn run_deliberation(
         // already Settled, so claimed_invoke would refuse to reclaim it anyway.
         let claim = match store.find_event_for_coordinate(dossier_id, &respondent_coordinate)? {
             Some(crate::event::Event {
-                payload: crate::event::EventPayload::PublicRecord(claim),
+                id,
+                payload: crate::event::EventPayload::PublicRecord(text),
                 ..
             }) => {
                 println!(
                     "Turn {}: Reusing respondent's already-recorded claim.",
                     turn
                 );
-                claim
+                RespondentClaim { event_id: id, text }
             }
             Some(_) => bail!(
                 "respondent coordinate {} has a persisted event with an unexpected payload type",
@@ -189,7 +191,10 @@ pub fn run_deliberation(
                 respondent_event.coordinate = Some(respondent_coordinate.clone());
                 store.record_event(dossier_id, &respondent_event)?;
 
-                claim
+                RespondentClaim {
+                    event_id: respondent_event.id,
+                    text: claim,
+                }
             }
         };
 

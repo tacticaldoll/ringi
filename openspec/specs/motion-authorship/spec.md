@@ -78,13 +78,21 @@ unconditionally and computes the other three itself, exactly as it already compu
 The arbitrator prompt SHALL show the stable id of every unresolved dissent, unresolved risk, and
 open question alongside its text. Ringi — not the agent — mints ids for newly-created risks and
 questions, so without this the arbitrator has no way to target an existing item again in a later
-turn's `Move`.
+turn's `Move`. The prompt SHALL also show the event id of every recent respondent claim alongside
+its text, so the arbitrator can cite that claim as event provenance in a `Move` that requires it
+(e.g. `AnswerQuestion`, `ResolveDissent`) — without this, the arbitrator can see what was said but
+has no identifier through which to reference it as evidence.
 
 #### Scenario: A newly-created risk's id is visible in the next turn's prompt
 
 - **WHEN** an arbitration turn creates a new risk via `AddRisk`, and a later turn's prompt is built
   from the resulting revision
 - **THEN** that later prompt shows the risk's ringi-assigned id next to its description
+
+#### Scenario: A respondent claim's event id is visible in the arbitrator prompt
+
+- **WHEN** a respondent's claim is shown to the arbitrator under "Recent Respondent Claims"
+- **THEN** the claim's event id is shown alongside its text
 
 ### Requirement: A Motion invocation's coordinate stays content-derived
 
