@@ -22,7 +22,7 @@ own blood — the Agent-CLI domain — and the wiring loop.
 durable step lifecycle + recovery   -> pacta   (Registry contract; ringi's own SQLite backend)
 convergence / "is this run done?"    -> suunta  (residual over open review issues + failed checks)
 step idempotency / resume safety     -> shaahid (witness a step attempt; do it exactly once)
-readiness / approval gating          -> ringi consumer code now; a Freigabe brick may extract later
+authorization / approval gating      -> ringi consumer code now; an authorization-gate brick may extract later
 Agent-CLI adapters, subprocess, git worktree, policy content, prompts, artifacts, the loop
                                       -> ringi's own blood
 ```
