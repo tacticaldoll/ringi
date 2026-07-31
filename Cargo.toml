@@ -13,9 +13,9 @@ repository = "https://github.com/tacticaldoll/ringi"
 # The lifecycle authority ringi composes over (published). Suunta (convergence) and
 # Shaahid (idempotency) are added when the composition loop lands — they are unpublished
 # family members, so they arrive as git dependencies until they release.
-pacta = "0.1.2"
-pacta-memory = "0.1.2"
-pacta-conformance = "0.1.2"
+pacta = "0.2.2"
+pacta-memory = "0.2.2"
+pacta-conformance = "0.2.2"
 rusqlite = { version = "0.32", features = ["bundled"] }
 # Unpublished family members — git deps at release/0.1.0 until they release, then crates.io.
 suunta = { git = "https://github.com/tacticaldoll/suunta", branch = "release/0.1.0" }
