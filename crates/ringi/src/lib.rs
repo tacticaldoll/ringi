@@ -4,5 +4,6 @@
 //! convergence), shaahid (exactly-once), and pacta (durable step lifecycle) into one loop.
 //! See `PROJECT.md` and `BACKLOG.md`.
 
+pub mod agent;
 pub mod reconcile;
 pub mod store;
