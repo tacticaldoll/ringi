@@ -187,9 +187,12 @@ pub fn apply(
     moves: Vec<Move>,
 ) -> Result<Residual, &'static str> {
     // Ringi's own move-payload checks: cadw's Create carries no payload, so it has nothing to
-    // validate about a new risk's description or a new question's text.
+    // validate about a new dissent's claim, a new risk's description, or a new question's text.
     for mv in &moves {
         match mv {
+            Move::AddDissent { claim } if claim.is_empty() => {
+                return Err("A new dissent requires a non-empty claim");
+            }
             Move::AddRisk { description } if description.is_empty() => {
                 return Err("A new risk requires a non-empty description");
             }
@@ -226,13 +229,21 @@ pub fn apply(
         .fold_batch(&replay, &AlwaysValid)
         .expect("replaying already-persisted, already-validated history cannot fail");
 
-    // Mint ids for any newly-created risk/question up front, so ringi can both build the cadw
-    // Create move and, on success, append the new item using the same id.
+    // Mint ids for any newly-created dissent/risk/question up front, so ringi can both build the
+    // cadw Create move and, on success, append the new item using the same id.
+    let mut new_dissents: Vec<(Uuid, String)> = Vec::new();
     let mut new_risks: Vec<(Uuid, String)> = Vec::new();
     let mut new_questions: Vec<(Uuid, String)> = Vec::new();
     let mut cadw_moves: Vec<CadwMove<Resolution>> = Vec::new();
     for mv in moves {
         match mv {
+            Move::AddDissent { claim } => {
+                let id = Uuid::new_v4();
+                new_dissents.push((id, claim));
+                cadw_moves.push(CadwMove::Create {
+                    target: dissent_target(id),
+                });
+            }
             Move::ResolveDissent { id, resolution } => cadw_moves.push(CadwMove::Close {
                 target: dissent_target(id),
                 outcome: resolution,
@@ -271,6 +282,13 @@ pub fn apply(
         if let Some(State::Closed(resolution)) = next.state_of(&dissent_target(dissent.id)) {
             dissent.resolved_by = Some(resolution.clone());
         }
+    }
+    for (id, claim) in new_dissents {
+        next_dissents.push(Dissent {
+            id,
+            claim,
+            resolved_by: None,
+        });
     }
 
     let mut next_risks = risks.to_vec();
