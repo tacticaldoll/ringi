@@ -52,3 +52,30 @@ A revision's deliberation goal (the suunta `Bearing`) SHALL comprise every disse
 - **WHEN** the deliberation goal for a revision is enumerated
 - **THEN** it contains one target per dissent and one target per risk, resolved or not
 - **AND** after verdicts are applied, the residual omits every target with a provenance-bound resolution
+
+### Requirement: A revision's content digest is derived from its content
+
+A revision's `content_digest` SHALL be a value computed from its SSOT content (`original_proposal`,
+`current_understanding`, `positions`, `dissents`, `risks`) such that two revisions with identical
+content in those fields have identical digests, and a revision whose content differs in any of
+those fields has a different digest. The digest MUST NOT be derived from the revision's identifier
+or any other value that varies independently of content. This computation MUST be identical for a
+dossier's initial revision and for every successor produced by `propose_successor`.
+
+#### Scenario: Identical content produces the same digest
+
+- **WHEN** two revisions are constructed with the same `original_proposal`, `current_understanding`,
+  `positions`, `dissents`, and `risks`
+- **THEN** their computed content digests are equal
+
+#### Scenario: Changing content changes the digest
+
+- **WHEN** a revision's `current_understanding` (or any other SSOT field) differs from another
+  revision's
+- **THEN** their computed content digests are not equal
+
+#### Scenario: The initial revision's digest is content-derived, not a literal
+
+- **WHEN** a dossier is submitted and its initial revision is committed
+- **THEN** the initial revision's `content_digest` is computed from its content by the same
+  computation `propose_successor` uses for a successor, not a fixed literal value

@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use sha2::{Digest as _, Sha256};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -47,10 +48,28 @@ pub struct Revision {
 }
 
 impl Revision {
-    /// Compute a pseudo-digest for the revision content.
-    /// In a production scenario, this would use a robust cryptographic hash over canonicalized content.
+    /// Compute a content digest over the revision's SSOT fields (a SHA-256 hash of their
+    /// canonical serialization), so identical content always digests identically and a
+    /// change to any SSOT field changes the digest. The digest never depends on
+    /// `revision_id` or any other value that varies independently of content.
     pub fn compute_digest(&self) -> Digest {
-        Digest(format!("digest-{}", self.revision_id))
+        let canonical = serde_json::to_vec(&(
+            &self.original_proposal,
+            &self.current_understanding,
+            &self.positions,
+            &self.dissents,
+            &self.risks,
+        ))
+        .expect("Revision's SSOT fields are always serializable");
+        let mut hasher = Sha256::new();
+        hasher.update(&canonical);
+        Digest(
+            hasher
+                .finalize()
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect(),
+        )
     }
 
     /// Creates a successor revision proposal and enforces conservative dissent retention.
@@ -256,5 +275,26 @@ mod tests {
         });
 
         assert!(base.propose_successor(next).is_ok());
+    }
+
+    #[test]
+    fn test_identical_content_produces_the_same_digest() {
+        let a = create_base_revision();
+        let mut b = create_base_revision();
+        // Vary only fields that are not part of the SSOT content: identity and the
+        // (pre-digest) content_digest placeholder.
+        b.revision_id = Uuid::new_v4();
+        b.dissents[0].id = a.dissents[0].id;
+
+        assert_eq!(a.compute_digest(), b.compute_digest());
+    }
+
+    #[test]
+    fn test_changed_content_produces_a_different_digest() {
+        let a = create_base_revision();
+        let mut b = a.clone();
+        b.current_understanding = "Building Y instead".into();
+
+        assert_ne!(a.compute_digest(), b.compute_digest());
     }
 }
