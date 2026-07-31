@@ -62,13 +62,15 @@ domain exercises its public contract honestly:
 - **suunta owns evaluation of the residual of dissents and risks.** `convergence.rs` projects a
   revision's open dissents and risks onto a suunta `Bearing` and reports readiness from
   `Residual::is_converged()`; readiness is never an agent claim.
-- **shaahid remains deferred.** Nothing exercises its `Deed`/`Seal`/`Fingerprint`/`witness`
-  contract yet. `event.rs`'s `InvocationCoordinate::idempotency_key` and
-  `store.rs`'s `is_invocation_completed` are dedup scaffolding that no code path consults before
-  invoking an agent — a real gap pacta's claim/release now covers for the crash-recovery case, but
-  shaahid's structural-contradiction detection (a drifted `Fingerprint` under a repeated `Seal`) is
-  not attached to anything. Unlike pacta, no structural-dependency assessment has concluded shaahid
-  should be adopted; that assessment, not just the attachment, is still outstanding.
+- **shaahid is assessed and deferred, not merely unattached.** A structural-dependency assessment
+  concluded **Defer**: `InvocationCoordinate::input_digest` is already `Revision::content_digest`,
+  computed over exactly the fields (`original_proposal`, `current_understanding`, `positions`,
+  `dissents`, `risks`) that `build_respondent_prompt` reads — so a coordinate's identity already
+  ties to its content, and shaahid's `Seal`/`Fingerprint` contradiction detection (a drifted
+  `Fingerprint` under a repeated `Seal`, or the reverse) has no path to fire today. The reopening
+  trigger: **Motion** or **prompt-width granularity** (both already Deferred Work below) letting an
+  invocation's actual content vary independently of those five fields would reopen this — at that
+  point, re-run the assessment rather than assume the prior Defer still holds.
 
 No dependency is retained for historical loyalty. Ringi must not recreate any retained mechanism.
 
