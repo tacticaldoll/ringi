@@ -10,13 +10,13 @@ composition, with ringi only wiring.
 ## Requirements
 
 ### Requirement: The Reconcile Loop Composes The Family Over Public APIs
-Ringi SHALL reconcile a desired set of steps to done through a consumer loop that composes
-suunta (residual planning and convergence), shaahid (exactly-once step execution), and pacta
-(durable step lifecycle) using only the public APIs of those crates. Ringi SHALL add no
-step-lifecycle state machine, completion calculation, or idempotency scheme of its own — the
-only ringi-owned logic is the loop and thin seam adapters (identity mapping, findings
-translation). If a seam cannot be expressed via a brick's public API, that SHALL be recorded
-as a finding, not worked around by reaching inside.
+Ringi SHALL reconcile a desired set of steps to done through a consumer loop that composes the
+published suunta 0.1.1 facade (residual planning and convergence), the published shaahid 0.1.1
+facade (exactly-once step execution), and pacta (durable step lifecycle) using only the public APIs
+of those crates. Ringi SHALL add no step-lifecycle state machine, completion calculation, or
+idempotency scheme of its own — the only ringi-owned logic is the loop and thin seam adapters
+(identity mapping, findings translation). If a seam cannot be expressed via a brick's public API,
+that SHALL be recorded as a finding, not worked around by reaching inside.
 
 #### Scenario: The loop reconciles a desired set to done
 - **WHEN** ringi is given a set of desired steps and runs the reconcile loop
@@ -25,6 +25,10 @@ as a finding, not worked around by reaching inside.
 #### Scenario: No brick behavior is reimplemented
 - **WHEN** the reconcile loop needs planning, convergence, idempotency, or lifecycle
 - **THEN** it calls the corresponding brick rather than computing that behavior itself
+
+#### Scenario: Published facade upgrades preserve composition
+- **WHEN** ringi resolves suunta and shaahid from their published 0.1.1 facade crates
+- **THEN** the existing convergence, exactly-once, reclaim, restart, and agent-backed composition scenarios remain green without a ringi-owned replacement mechanism
 
 ### Requirement: Convergence Is Decided By Suunta
 The loop SHALL halt as complete only when suunta reports the residual converged, never by a
