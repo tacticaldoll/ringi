@@ -1,19 +1,17 @@
 //! The residual-ledger seam: ringi's one place that speaks cadw.
 //!
-//! Ringi composes `cadw_contract`'s `Ledger` to validate and atomically apply a `Move` batch's
+//! Ringi composes `cadw`'s `Ledger` to validate and atomically apply a `Move` batch's
 //! structural rules — existence, state-machine, duplicate-target rejection — the same shape
 //! `Revision::apply_moves` needs for its dissents/risks/questions. `cadw`'s `Ledger` is
 //! reconstructed fresh from the revision's own already-persisted state on every call, used, and
 //! discarded: `cadw` owns no persistence of its own by design, so ringi's own
 //! `Dissent`/`Risk`/`Question` vectors remain the sole durable source of truth. Per
-//! `docs/naming.md`'s seam rule, `cadw_contract`'s vocabulary (`TargetId`, `Ledger`, `Move`,
+//! `docs/naming.md`'s seam rule, `cadw`'s vocabulary (`TargetId`, `Ledger`, `Move`,
 //! `Validator`, `Rejection`) is confined to this module and never names a ringi domain type.
 
 use std::fmt;
 
-use cadw_contract::{
-    Ledger, Move as CadwMove, Rejection as CadwRejection, State, TargetId, Validator,
-};
+use cadw::{Ledger, Move as CadwMove, Rejection as CadwRejection, State, TargetId, Validator};
 use uuid::Uuid;
 
 use crate::revision::{Dissent, Move, Question, Resolution, Risk};
