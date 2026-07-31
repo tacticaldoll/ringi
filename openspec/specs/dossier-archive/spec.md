@@ -41,3 +41,28 @@ digest is not vulnerable to those sections having been tampered with after rende
 
 - **WHEN** two archive renderings of the same dossier differ only in their Public Event Index or Sealed Audit Section content
 - **THEN** their integrity digests differ
+
+### Requirement: A rendered archive includes every condition and its final status
+
+`render_archive` SHALL render a `## Conditions` section listing every condition attached to the
+dossier, each as a checkbox line showing its description and whether it was ultimately met. The
+section SHALL NOT be omitted for a dossier with no conditions; it SHALL render an explicit
+placeholder instead.
+
+#### Scenario: A met condition renders as checked
+
+- **WHEN** a dossier has a condition whose `is_met` is `true`
+- **THEN** the rendered archive's Conditions section shows that condition's description as a
+  checked box
+
+#### Scenario: An unmet condition renders as unchecked
+
+- **WHEN** a dossier has a condition whose `is_met` is `false`
+- **THEN** the rendered archive's Conditions section shows that condition's description as an
+  unchecked box
+
+#### Scenario: A dossier with no conditions still renders the section
+
+- **WHEN** a dossier has no conditions attached
+- **THEN** the rendered archive still includes a Conditions section, with an explicit placeholder
+  noting none exist
