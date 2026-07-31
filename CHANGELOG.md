@@ -1,12 +1,15 @@
 # Changelog
 
-All notable changes to this project are documented here. The format follows
-[Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
-[Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+All notable changes to this project are documented here. The format is based on
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
+to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.1.0] - 2026-07-30
 
-_0.1.0 is in development; it has not been released._
+First release: the deliberation MVP end to end — draft, submit, deliberate, decide, archive —
+composing pacta, suunta, and cadw. Structured move authorship (`Motion`) replaces whole-successor
+arbitrator authorship; dissents, risks, questions, and conditions are all real `Revision` residual
+items with create/resolve symmetry.
 
 ### Added
 
@@ -19,10 +22,34 @@ _0.1.0 is in development; it has not been released._
   is met.
 - A `tianheng`-backed architecture test (`crates/ringi/tests/architecture.rs`) mechanically
   confines `suunta`'s imports to the `convergence` seam, alongside `scripts/naming-guard.sh`'s
-  declaration-level naming guard.
+  declaration-level naming guard. Later extended to confine `pacta` to `registry` and `cadw` to
+  `residual_ledger`.
 - Revived `registry.rs`'s `SqliteRegistry`, a durable `pacta::Registry` claiming and settling each
   respondent, arbitrator, and condition-evaluator invocation, so a crash between invoking an Agent
   CLI and committing its result is durably distinguishable from a completed attempt.
+- **Structured move authorship ("Motion")**: an arbitration turn no longer authors an entire
+  successor `Revision`. It declares zero or more discrete, provenance-bound `Move`s —
+  `AddDissent`, `ResolveDissent`, `AddRisk`, `CloseRisk`, `AskQuestion`, `AnswerQuestion` —
+  applied atomically by `Revision::apply_moves`: one invalid move rejects the whole batch, matching
+  the prior all-or-nothing turn behavior. `original_proposal`/`revision_id`/`parent_digest`/
+  `content_digest` are no longer read from the agent at all, removing the immutability-check bug
+  class structurally rather than validating it more strictly.
+- `Question` joined `Dissent`/`Risk` as a real residual item with its own convergence target
+  category and store persistence; the respondent prompt gained an `## Open Questions` section.
+- `crate::residual_ledger`, a seam composing [`cadw`](https://crates.io/crates/cadw)'s `Ledger`
+  for atomic batch-fold validation (existence, state-machine, duplicate-target rejection) of a
+  `Move`/`ConditionMove` batch, replacing an inline implementation.
+- `Condition` promoted from a dossier-level `{ id, description, is_met: bool }` flag to a
+  `Revision`-level residual item, `{ id, description, resolved_by: Option<Resolution> }`,
+  mirroring `Dissent`/`Risk`/`Question` — real reason/provenance storage an evaluator's verdict
+  previously computed and then discarded. Mutated through a new `ConditionMove` (`Add`/`Satisfy`)
+  — deliberately a separate enum from the arbitrator's `Move`, so an arbitrator can never author
+  or satisfy a condition. Gains its own `conditions`/`condition_resolution_provenance` tables.
+- The terminal archive renders dedicated `## Dissents`/`## Risks`/`## Questions`/`## Conditions`
+  sections, each a checkbox list with an explicit placeholder when empty.
+- The arbitrator prompt shows every unresolved item's stable id and each recent respondent
+  claim's event id, so a later turn's `Move` can reference either as a target or as resolution
+  provenance.
 
 ### Changed
 
@@ -37,7 +64,15 @@ _0.1.0 is in development; it has not been released._
 - `Revision::compute_digest()` now hashes a revision's SSOT content (`original_proposal`,
   `current_understanding`, `positions`, `dissents`, `risks`) with SHA-256, instead of formatting
   the revision's own random `revision_id`; the initial revision `submit_command` creates no longer
-  uses a hardcoded literal.
+  uses a hardcoded literal. Later extended to cover `questions`, then `conditions`, as each joined
+  the residual model.
+- Adopted `cadw-contract` for `residual_ledger`'s validation, initially as a temporary Git
+  dependency (cadw was unpublished), then flipped to the published `cadw` facade crate once cadw
+  shipped its own `0.1.0` (contract and facade together) — matching how ringi already depends on
+  `pacta`/`suunta`'s facades rather than their `-contract` crates directly.
+- Upgrade pacta from 0.2.2 to 0.3.0 (`Registry`/`AsyncRegistry` relax their `Send + Sync`
+  supertrait bound on the backend type; `pacta-executor` gains an opt-in `Policy`/`Verdict` trait
+  for infrastructure-failure disposition that ringi's own `registry.rs` does not use).
 
 ### Fixed
 
@@ -72,3 +107,22 @@ _0.1.0 is in development; it has not been released._
   (dissent/risk retention, `original_proposal` immutability) now runs inside the same claim
   boundary as the arbitrator's parse — a structurally-valid response that fails that validation
   releases the claim for retry instead of settling it fulfilled.
+- The terminal archive's `## Final SSOT` section only ever rendered `original_proposal`/
+  `current_understanding` — every dissent, risk, and question (resolved or not) was silently
+  omitted. Found by dogfooding a never-converging arbitrator whose accumulated, unresolved risks
+  left no trace in the archive of a cancelled dossier; only `## Conditions` (added earlier) ever
+  rendered an actual residual category.
+- `Dissent` had no creation path anywhere in the live system: the arbitrator's `Move` enum had
+  `ResolveDissent` but no `AddDissent`, unlike `Risk`/`Question`, which both pair an `Add*`/`Ask*`
+  variant with their resolve/answer variant. Every dissent that existed anywhere in the codebase
+  was inside a test's literal `Revision` construction, never reachable through any real dossier.
+
+### Removed
+
+- `shaahid`, a declared but entirely unused dependency: no code anywhere imported `shaahid::`
+  anything. `InvocationCoordinate`'s own content-derived identity already closes the
+  identity/content-drift gap shaahid exists to fill — a considered Decline, re-confirmed after
+  Motion shipped and again after Conditions folded into the residual model, now with the leftover
+  dependency itself actually removed rather than left as compiled dead weight.
+
+[0.1.0]: https://github.com/tacticaldoll/ringi/releases/tag/v0.1.0
