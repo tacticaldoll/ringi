@@ -1,0 +1,30 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  dod:
+    name: Definition of Done
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: build / test / clippy / fmt / doc / naming-guard
+        run: |
+          cargo build --workspace
+          cargo test --workspace
+          cargo clippy --workspace --all-targets -- -D warnings
+          cargo fmt --all --check
+          RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+          ./scripts/naming-guard.sh
+
+  supply-chain:
+    name: Supply chain (cargo-deny)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: license / advisory / bans / sources policy
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
