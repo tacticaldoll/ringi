@@ -2,12 +2,6 @@
 //! including its locked settings and conditions), `revisions`, `dissents`/`risks` with their
 //! resolution provenance, and `events`. This is not the pacta claim/lease state — that table and
 //! connection live in `registry.rs`, opened separately against the same file.
-//!
-//! **Known dead schema:** `init` also creates `locked_settings`, `conditions`, and `decisions`
-//! tables that nothing in this crate ever inserts into or selects from — `SubmittedDossier`
-//! (locked settings and conditions included) is persisted as one JSON blob in `dossiers.state`
-//! instead. Left in place rather than silently dropped by this doc pass; removing dead schema is
-//! a decision for its own change, not a side effect of writing this one down.
 
 use std::path::Path;
 
@@ -53,16 +47,6 @@ pub fn init(conn: &Connection) -> Result<(), StoreError> {
         "CREATE TABLE IF NOT EXISTS dossiers (
                 id    TEXT PRIMARY KEY,
                 state TEXT NOT NULL
-            )",
-        [],
-    )?;
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS locked_settings (
-                dossier_id  TEXT PRIMARY KEY,
-                strategy    TEXT NOT NULL,
-                max_turns   INTEGER NOT NULL,
-                respondent  TEXT NOT NULL,
-                arbitrator  TEXT NOT NULL
             )",
         [],
     )?;
@@ -131,25 +115,6 @@ pub fn init(conn: &Connection) -> Result<(), StoreError> {
             )",
         [],
     )?;
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS conditions (
-                id          TEXT PRIMARY KEY,
-                dossier_id  TEXT NOT NULL,
-                predicate   TEXT NOT NULL,
-                state       TEXT NOT NULL
-            )",
-        [],
-    )?;
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS decisions (
-                id          TEXT PRIMARY KEY,
-                dossier_id  TEXT NOT NULL,
-                kind        TEXT NOT NULL,
-                human_id    TEXT NOT NULL
-            )",
-        [],
-    )?;
-
     Ok(())
 }
 
