@@ -65,6 +65,20 @@ pub fn render_archive(dossier_id: &str, store: &DossierStore) -> anyhow::Result<
         writeln!(&mut out, "\n*(No revisions found)*")?;
     }
 
+    writeln!(&mut out, "\n## Conditions")?;
+    if dossier.conditions.is_empty() {
+        writeln!(&mut out, "*(No conditions attached)*")?;
+    } else {
+        for condition in &dossier.conditions {
+            writeln!(
+                &mut out,
+                "- [{}] {}",
+                if condition.is_met { "x" } else { " " },
+                condition.description
+            )?;
+        }
+    }
+
     let events = store.events_for_dossier(dossier_id)?;
 
     writeln!(&mut out, "\n## Public Event Index")?;
@@ -112,12 +126,17 @@ pub fn render_archive(dossier_id: &str, store: &DossierStore) -> anyhow::Result<
 mod tests {
     use super::*;
     use crate::dossier::{
-        ArbitrationSettings, Limits, LockedSettings, RoleBindings, StrategyPreset, SubmittedDossier,
+        ArbitrationSettings, Condition, Limits, LockedSettings, RoleBindings, StrategyPreset,
+        SubmittedDossier,
     };
     use crate::revision::{Digest as RevisionDigest, Revision};
     use uuid::Uuid;
 
     fn approved_dossier(id: Uuid) -> SubmittedDossier {
+        approved_dossier_with_conditions(id, vec![])
+    }
+
+    fn approved_dossier_with_conditions(id: Uuid, conditions: Vec<Condition>) -> SubmittedDossier {
         SubmittedDossier {
             id,
             state: LifecycleState::Approved,
@@ -129,7 +148,7 @@ mod tests {
                     arbitrator: "unused".to_string(),
                 },
             },
-            conditions: vec![],
+            conditions,
         }
     }
 
@@ -224,6 +243,39 @@ mod tests {
         let rendered = render_archive(&id_str, &store).unwrap();
         assert!(rendered.contains("*(No public events recorded)*"));
         assert!(rendered.contains("*(No sealed evaluations recorded)*"));
+        assert!(rendered.contains("*(No conditions attached)*"));
+    }
+
+    #[test]
+    fn conditions_render_as_checkboxes_matching_their_final_met_status() {
+        let mut store = open_store("conditions");
+        let id = Uuid::new_v4();
+        let id_str = id.to_string();
+        let dossier = approved_dossier_with_conditions(
+            id,
+            vec![
+                Condition {
+                    id: Uuid::new_v4(),
+                    description: "Security review completed".into(),
+                    is_met: true,
+                },
+                Condition {
+                    id: Uuid::new_v4(),
+                    description: "Load test passed".into(),
+                    is_met: false,
+                },
+            ],
+        );
+        store
+            .insert_dossier(&id_str, &serde_json::to_string(&dossier).unwrap())
+            .unwrap();
+        store
+            .commit_successor_revision(&id_str, None, &base_revision(), &[])
+            .unwrap();
+
+        let rendered = render_archive(&id_str, &store).unwrap();
+        assert!(rendered.contains("- [x] Security review completed"));
+        assert!(rendered.contains("- [ ] Load test passed"));
     }
 
     #[test]
