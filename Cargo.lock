@@ -404,9 +404,9 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
 name = "pacta"
-version = "0.2.2"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9b7388217cc52949b34fdf901704448ba5fd8001dc598bf9c65ab5540b53387c"
+checksum = "4369aa197efd7dad1855ef6d9755e88ba793c4a1ef9217c12d3610cb6af41e50"
 dependencies = [
  "pacta-contract",
  "pacta-driver",
@@ -415,9 +415,9 @@ dependencies = [
 
 [[package]]
 name = "pacta-conformance"
-version = "0.2.2"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f179d8482e823a9b821c69b1c87c6be49ac362aa6d5e35ef4b602a1eae79f91a"
+checksum = "966d1e226e4adb6f7631947881ff5b0798a491654aa288791592327bacd4d99f"
 dependencies = [
  "pacta-contract",
  "uuid",
@@ -425,9 +425,9 @@ dependencies = [
 
 [[package]]
 name = "pacta-contract"
-version = "0.2.2"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "22bcd203920138fc91a4a8393284873e2a29b3e8bd70c4d8dc18d0a7d5e62275"
+checksum = "7688404c6418e2895fe4d137803518a13fd5daf4472ba67fb651b80676f9140d"
 dependencies = [
  "serde",
  "uuid",
@@ -435,9 +435,9 @@ dependencies = [
 
 [[package]]
 name = "pacta-driver"
-version = "0.2.2"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "411c06b692911a56b3f408d1417921fea7028ca305d8c5fb60d6ede19bc72100"
+checksum = "ea2b1396e885cffc52cbc2ac7c0ef4a6965f6698299465add31c9935c7bbb81d"
 dependencies = [
  "pacta-contract",
  "pacta-executor",
@@ -445,18 +445,18 @@ dependencies = [
 
 [[package]]
 name = "pacta-executor"
-version = "0.2.2"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a9a6e1d9cd60e8ae8a3d43bd82ac00e3ac5471f4f2ce2a357eadd82b8f35a50b"
+checksum = "ec92fbe9bd1d593b07208e7501a4ab268ee8d0b337c9f4c66274a1fecb003442"
 dependencies = [
  "pacta-contract",
 ]
 
 [[package]]
 name = "pacta-memory"
-version = "0.2.2"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8ae3b6c9ec0a1cc082dacec2af41007fb104011da15fd89a9d679efc71b837d4"
+checksum = "e214fa22a7843ba6fbdaeae64ccb81949486b35d521508deff1add4e7fdf5c54"
 dependencies = [
  "pacta-contract",
  "uuid",
