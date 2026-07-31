@@ -101,6 +101,19 @@ creation (ingress is backend/consumer territory, by pacta's design).
      in-flight seam lands with/after it. See the corrected `docs/round-model.md` "first
      increment". The shelved proposal is preserved in git on the
      `change/report-in-flight-coverage` branch.
+   - **In-flight seam — deferred again (second apply-time discovery).** With findings-as-targets
+     landed, the seam was revisited and found to *still* have no honest teeth in the **current**
+     loop. Two structural reasons, from reading the actual code: (1) `drive_build` consumes a
+     failed attempt's `release(reclaimable_at)`/retry **within the same round** — it advances past
+     the backoff and re-claims internally — so no attempt stays pending across a plan change for
+     coverage to `Supersede`; (2) the loop builds **once per round**, not once per target, so the
+     per-finding "pending-retry attempt" the round model pictured (§②/§first-increment) does not
+     exist to be superseded. Filling the empty coverage slot now would be exactly the ceremony the
+     round-model fidelity self-audit forbids ("do not keep reporting in-flight for show"). So the
+     seam is **deferred until a trigger is genuinely forced** — concurrency (phase 5) or a
+     deliberate deferred-retry / per-target-attempt loop restructure — and `Sounding::new(fix,
+     vec![])` is left honestly empty until then. This is the anti-ceremony guard firing, not a
+     re-sequencing.
 2. **Persistence**: `SqliteRegistry` over pacta's contract (conformance-proven) + ringi's
    domain tables; runs/steps/events/artifacts; resume.
    - **Registry half — landed.** `store::SqliteRegistry` implements `pacta::Registry` over
