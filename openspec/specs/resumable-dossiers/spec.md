@@ -15,9 +15,11 @@ attempt rather than silently re-invoked or silently lost.
 Before invoking an Agent CLI for a respondent, arbitrator, or condition-evaluator turn, ringi
 SHALL claim a durable pact keyed by that invocation's `InvocationCoordinate` through
 `SqliteRegistry`, and SHALL invoke the agent only if the claim succeeds. After the agent responds,
-ringi SHALL settle the claim — fulfilled on success, released for the same coordinate on failure —
-so a crash between the invocation and the eventual event/revision commit leaves a durable,
-inspectable trace instead of none.
+ringi SHALL settle the claim — fulfilled only if the invocation produced a result ringi could
+actually use (a zero exit code and, where a structured output is required, output that parses into
+the expected type), released for the same coordinate on any other outcome — so a crash between the
+invocation and the eventual event/revision commit leaves a durable, inspectable trace instead of
+none, and a malformed or unusable response never permanently blocks the coordinate.
 
 #### Scenario: A successful invocation is claimed then fulfilled
 
@@ -30,10 +32,29 @@ inspectable trace instead of none.
 - **THEN** the claim is released, so the same coordinate remains claimable — retrying is simply
   re-running the command, as it is today
 
+#### Scenario: A malformed response is released, not fulfilled
+
+- **WHEN** an arbitrator or condition-evaluator invocation exits zero but its output does not
+  parse into the structured type ringi needs
+- **THEN** the claim is released, not settled fulfilled, so the same coordinate remains claimable
+  once the underlying problem is fixed
+
 #### Scenario: Re-submitting the same coordinate is idempotent
 
 - **WHEN** a pact is submitted for a coordinate that was already submitted
 - **THEN** no duplicate pact is created — the same underlying pact is claimed
+
+### Requirement: Claiming one coordinate never claims or settles a different coordinate's pact
+
+Each invocation coordinate's pact SHALL be claimed and settled independently of every other
+coordinate's pact in the same dossier, even when both are simultaneously claimable.
+
+#### Scenario: A settled coordinate does not cross-claim a sibling coordinate's reclaimable pact
+
+- **WHEN** a coordinate is already settled and a different, unrelated coordinate in the same
+  dossier is released and reclaimable
+- **THEN** re-invoking claim for the settled coordinate finds nothing claimable — it does not claim
+  or settle the other coordinate's pact
 
 ### Requirement: An unclaimable invocation surfaces as an error, not a silent retry
 

@@ -25,16 +25,20 @@ use crate::event::{Event, EventPayload, InvocationCoordinate};
 use crate::registry::SqliteRegistry;
 use crate::store::DossierStore;
 
-/// Claims `coordinate` through `registry`, runs `invoke`, and settles the claim — fulfilled on a
-/// successful (`exit_code == Some(0)`) response, released for an immediate retry under the same
-/// coordinate otherwise — before returning the invocation's result. Centralizes the
-/// claim-before-invoke/settle-after checkpoint so the three invocation sites (respondent,
-/// arbitrator, condition-evaluator) do not each repeat it.
-fn claimed_invoke(
+/// Claims `coordinate` through `registry`, runs `invoke`, and settles the claim — fulfilled only
+/// if `invoke` returns `Ok` (a usable result — the caller decides what "usable" means: an
+/// exit-code check, and for the arbitrator/condition-evaluator, a parsed structured output),
+/// released for an immediate retry under the same coordinate on any `Err`. A claim never settles
+/// fulfilled on a bare zero exit code alone — a caller whose success also requires parsing
+/// structured output must do that parse *inside* `invoke`, or a malformed response would settle
+/// fulfilled (permanently, since fulfilled is terminal) despite ringi never getting a usable
+/// result. Centralizes the claim-before-invoke/settle-after checkpoint so the three invocation
+/// sites (respondent, arbitrator, condition-evaluator) do not each repeat it.
+fn claimed_invoke<T>(
     registry: &SqliteRegistry,
     coordinate: &InvocationCoordinate,
-    invoke: impl FnOnce() -> Result<crate::agent::AgentResponse, crate::agent::AgentError>,
-) -> anyhow::Result<crate::agent::AgentResponse> {
+    invoke: impl FnOnce() -> anyhow::Result<T>,
+) -> anyhow::Result<T> {
     let ticket = registry.claim_invocation(coordinate)?.with_context(|| {
         format!(
             "cannot claim invocation {} — already settled or held under an unexpired lease",
@@ -44,10 +48,10 @@ fn claimed_invoke(
 
     let outcome = invoke();
     match &outcome {
-        Ok(response) if response.exit_code == Some(0) => registry.settle_fulfilled(ticket)?,
-        _ => registry.release_for_retry(ticket)?,
+        Ok(_) => registry.settle_fulfilled(ticket)?,
+        Err(_) => registry.release_for_retry(ticket)?,
     }
-    Ok(outcome?)
+    outcome
 }
 
 pub fn run_deliberation(
@@ -125,12 +129,17 @@ pub fn run_deliberation(
         };
 
         println!("Turn {}: Invoking respondent...", turn);
-        let res = claimed_invoke(registry, &respondent_coordinate, || respondent.run(req))?;
-        if res.exit_code != Some(0) {
-            bail!("Respondent failed: {}", res.stderr);
-        }
-
-        let claim = res.stdout.trim().to_string();
+        let claim = claimed_invoke(
+            registry,
+            &respondent_coordinate,
+            || -> anyhow::Result<String> {
+                let res = respondent.run(req)?;
+                if res.exit_code != Some(0) {
+                    bail!("Respondent failed: {}", res.stderr);
+                }
+                Ok(res.stdout.trim().to_string())
+            },
+        )?;
         println!("Turn {}: Respondent answered with claim: {}", turn, claim);
 
         // Record respondent event
@@ -161,17 +170,20 @@ pub fn run_deliberation(
         };
 
         println!("Turn {}: Invoking arbitrator...", turn);
-        let arb_res = claimed_invoke(registry, &arbitrator_coordinate, || {
-            arbitrator.run(arb_agent_req)
-        })?;
-        if arb_res.exit_code != Some(0) {
-            bail!("Arbitrator failed: {}", arb_res.stderr);
-        }
-
-        let metadata = arb_res
-            .metadata
-            .context("Arbitrator produced no structured output")?;
-        let resolution_output: ArbitrationOutput = serde_json::from_value(metadata)?;
+        let resolution_output = claimed_invoke(
+            registry,
+            &arbitrator_coordinate,
+            || -> anyhow::Result<ArbitrationOutput> {
+                let res = arbitrator.run(arb_agent_req)?;
+                if res.exit_code != Some(0) {
+                    bail!("Arbitrator failed: {}", res.stderr);
+                }
+                let metadata = res
+                    .metadata
+                    .context("Arbitrator produced no structured output")?;
+                Ok(serde_json::from_value(metadata)?)
+            },
+        )?;
 
         println!("Turn {}: Applying arbitration...", turn);
         let (mut successor, _next_questions) =
@@ -270,19 +282,25 @@ pub fn evaluate_conditions(
             env: HashMap::new(),
         };
 
-        let res = claimed_invoke(registry, &coordinate, || evaluator.run(req))?;
-        if res.exit_code != Some(0) {
-            bail!(
-                "Condition evaluator failed for condition {}: {}",
-                dossier.conditions[index].id,
-                res.stderr
-            );
-        }
-
-        let metadata = res
-            .metadata
-            .context("Condition evaluator produced no structured output")?;
-        let output: ConditionEvaluationOutput = serde_json::from_value(metadata)?;
+        let condition_id = dossier.conditions[index].id;
+        let output = claimed_invoke(
+            registry,
+            &coordinate,
+            || -> anyhow::Result<ConditionEvaluationOutput> {
+                let res = evaluator.run(req)?;
+                if res.exit_code != Some(0) {
+                    bail!(
+                        "Condition evaluator failed for condition {}: {}",
+                        condition_id,
+                        res.stderr
+                    );
+                }
+                let metadata = res
+                    .metadata
+                    .context("Condition evaluator produced no structured output")?;
+                Ok(serde_json::from_value(metadata)?)
+            },
+        )?;
 
         let mut evaluation_event = Event::new_sealed(
             EventPayload::SealedEvaluation {
@@ -608,6 +626,71 @@ mod tests {
         let _ = std::fs::remove_file(&marker);
     }
 
+    #[test]
+    fn a_malformed_arbitrator_response_releases_the_claim_not_fulfills_it() {
+        let _guard = crate::PROCESS_CWD_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!(
+            "ringi-loop-malformed-{}.sqlite",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+
+        let id = Uuid::new_v4();
+        let id_str = id.to_string();
+
+        let respondent = fake_agent("resp-ok.sh", "echo 'looks fine'");
+        // Exits zero, but is not valid JSON — the exact shape of bug this test guards against.
+        let arbitrator = fake_agent("arb-garbled.sh", "echo 'not json at all'");
+
+        let mut store = DossierStore::open(&path).unwrap();
+        let registry = test_registry(&path);
+        let dossier = submitted(
+            id,
+            respondent.to_str().unwrap(),
+            arbitrator.to_str().unwrap(),
+            1,
+        );
+        let json = serde_json::to_string(&dossier).unwrap();
+        store.insert_dossier(&id_str, &json).unwrap();
+
+        let initial = Revision {
+            revision_id: Uuid::new_v4(),
+            parent_digest: None,
+            content_digest: Digest("init".into()),
+            original_proposal: "p".into(),
+            current_understanding: "u".into(),
+            positions: vec![],
+            dissents: vec![],
+            risks: vec![],
+        };
+        store
+            .commit_successor_revision(&id_str, None, &initial, &[])
+            .unwrap();
+
+        let err = run_deliberation(&id_str, &json, &mut store, &registry).unwrap_err();
+        assert!(err.to_string().contains("no structured output"));
+
+        // The arbitrator's claim must have been released, not fulfilled: the exact same
+        // coordinate is claimable again, proving it did not settle terminally on the bad output.
+        let arbitrator_coordinate = InvocationCoordinate {
+            dossier_id: id,
+            role: "arbitrator".to_string(),
+            input_digest: initial.content_digest.clone(),
+            turn: 1,
+            attempt: 1,
+        };
+        let retry_ticket = registry
+            .claim_invocation(&arbitrator_coordinate)
+            .unwrap()
+            .expect("a released coordinate must be claimable again, not stuck as fulfilled");
+        registry.settle_fulfilled(retry_ticket).unwrap();
+
+        let _ = std::fs::remove_file(&path);
+    }
+
     fn base_revision() -> Revision {
         Revision {
             revision_id: Uuid::new_v4(),
@@ -753,6 +836,65 @@ mod tests {
 
         let err = evaluate_conditions(&id_str, &json, &mut store, &registry).unwrap_err();
         assert!(err.to_string().contains("not ReadyForDecision"));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_malformed_evaluator_response_releases_the_claim_not_fulfills_it() {
+        let _guard = crate::PROCESS_CWD_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!(
+            "ringi-eval-malformed-{}.sqlite",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+
+        let id = Uuid::new_v4();
+        let id_str = id.to_string();
+        let condition = one_condition();
+        // Exits zero, but is not valid JSON — the exact shape of bug this test guards against.
+        let evaluator = fake_agent("eval-garbled.sh", "echo 'not json at all'");
+
+        let mut store = DossierStore::open(&path).unwrap();
+        let registry = test_registry(&path);
+        let dossier = ready_for_decision_with_conditions(
+            id,
+            evaluator.to_str().unwrap(),
+            vec![condition.clone()],
+        );
+        let json = serde_json::to_string(&dossier).unwrap();
+        store.insert_dossier(&id_str, &json).unwrap();
+        store
+            .commit_successor_revision(&id_str, None, &base_revision(), &[])
+            .unwrap();
+
+        let err = evaluate_conditions(&id_str, &json, &mut store, &registry).unwrap_err();
+        assert!(err.to_string().contains("no structured output"));
+
+        // The evaluator's claim must have been released, not fulfilled: the exact same
+        // coordinate is claimable again.
+        let coordinate = InvocationCoordinate {
+            dossier_id: id,
+            role: format!("condition_evaluator:{}", condition.id),
+            input_digest: base_revision().content_digest.clone(),
+            turn: 0,
+            attempt: 1,
+        };
+        let retry_ticket = registry
+            .claim_invocation(&coordinate)
+            .unwrap()
+            .expect("a released coordinate must be claimable again, not stuck as fulfilled");
+        registry.settle_fulfilled(retry_ticket).unwrap();
+
+        let state_json = store.get_dossier_state(&id_str).unwrap().unwrap();
+        let updated: SubmittedDossier = serde_json::from_str(&state_json).unwrap();
+        assert!(
+            !updated.conditions[0].is_met,
+            "a malformed evaluation must not mark the condition met"
+        );
+
         let _ = std::fs::remove_file(&path);
     }
 

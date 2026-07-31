@@ -45,3 +45,12 @@ _0.1.0 is in development; it has not been released._
   `cargo test`'s default parallel runner, since each was written and reviewed on its own branch
   where it was the only such test in its module; serialized with a crate-wide
   `PROCESS_CWD_LOCK` shared by every CWD-mutating or agent-spawning test.
+- `claimed_invoke` settled a pact fulfilled on a zero exit code alone, before the caller had parsed
+  the agent's output into the structured type it actually needed — a malformed arbitrator or
+  condition-evaluator response (exit 0, unparseable output) was permanently marked settled,
+  blocking every future retry. It now settles fulfilled only once the caller has a usable result.
+- `SqliteRegistry::claim_invocation` scoped every invocation's pact to its dossier alone, so
+  pacta's docket-scoped `claim()` could return a *different* coordinate's pact within the same
+  dossier (e.g. a respondent's re-invocation silently claiming and fulfilling the arbitrator's
+  still-pending one). Each pact's docket is now the coordinate's own idempotency key, so a docket
+  never holds more than one pact.

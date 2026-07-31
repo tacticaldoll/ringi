@@ -159,12 +159,20 @@ impl SqliteRegistry {
     /// Claim a pact for `coordinate`, submitting it first if this is the first attempt.
     /// Idempotent: re-submitting the same coordinate names the same pact
     /// (`Uuid::new_v5` over its `idempotency_key()`), so this never creates a duplicate.
+    ///
+    /// The docket is the coordinate's own `idempotency_key()`, not the bare `dossier_id`. Pacta's
+    /// `claim` selects *any* claimable row in a docket (`LIMIT 1`, no pact-id filter) — if two
+    /// different coordinates in the same dossier (e.g. a respondent pact and an arbitrator pact)
+    /// shared a docket, one coordinate's claim could silently hand back and settle the *other*
+    /// coordinate's pact whenever both happened to be claimable at once (one just released, one
+    /// freshly submitted). Scoping the docket to the coordinate itself makes it 1:1 with the pact
+    /// id, so `claim` can never return a pact other than the one this call derived.
     pub fn claim_invocation(
         &self,
         coordinate: &InvocationCoordinate,
     ) -> Result<Option<InvocationTicket>, RegistryError> {
         let pact_id = Uuid::new_v5(&PACT_NAMESPACE, coordinate.idempotency_key().as_bytes());
-        let docket = coordinate.dossier_id.to_string();
+        let docket = coordinate.idempotency_key();
 
         {
             let conn = self.conn.lock().expect("registry mutex not poisoned");
@@ -445,6 +453,65 @@ mod tests {
         assert!(
             retry.is_some(),
             "a released coordinate must be claimable again immediately"
+        );
+    }
+
+    #[test]
+    fn a_settled_coordinate_does_not_cross_claim_a_different_coordinates_reclaimable_pact() {
+        // Reproduces the exact dogfooding scenario: a respondent coordinate already settled from
+        // a prior turn, an unrelated arbitrator coordinate in the same dossier left released
+        // (reclaimable) from a failed attempt. Re-invoking `claim_invocation` for the *settled*
+        // respondent coordinate must find nothing claimable — not silently claim (and later
+        // settle) the arbitrator's reclaimable pact instead, just because both share a docket.
+        let registry = SqliteRegistry::open(":memory:").expect("open");
+        let dossier_id = Uuid::new_v4();
+        let respondent_coord = InvocationCoordinate {
+            dossier_id,
+            role: "respondent".to_string(),
+            input_digest: Digest("dig".into()),
+            turn: 1,
+            attempt: 1,
+        };
+        let arbitrator_coord = InvocationCoordinate {
+            dossier_id,
+            role: "arbitrator".to_string(),
+            input_digest: Digest("dig".into()),
+            turn: 1,
+            attempt: 1,
+        };
+
+        let respondent_ticket = registry
+            .claim_invocation(&respondent_coord)
+            .expect("claim should not error")
+            .expect("a fresh coordinate should be claimable");
+        registry
+            .settle_fulfilled(respondent_ticket)
+            .expect("settle should succeed");
+
+        let arbitrator_ticket = registry
+            .claim_invocation(&arbitrator_coord)
+            .expect("claim should not error")
+            .expect("a fresh coordinate should be claimable");
+        registry
+            .release_for_retry(arbitrator_ticket)
+            .expect("release should succeed");
+
+        // Re-invoking the already-settled respondent coordinate must find nothing to claim.
+        assert!(
+            registry
+                .claim_invocation(&respondent_coord)
+                .unwrap()
+                .is_none(),
+            "an already-settled coordinate must never claim a different coordinate's pact"
+        );
+
+        // The arbitrator's own pact must still be independently claimable — untouched.
+        assert!(
+            registry
+                .claim_invocation(&arbitrator_coord)
+                .unwrap()
+                .is_some(),
+            "the arbitrator's reclaimable pact must remain claimable under its own coordinate"
         );
     }
 
