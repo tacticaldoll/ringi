@@ -25,7 +25,10 @@ reasoning from a prior evaluation, or any dissent or risk.
 ### Requirement: Only a True verdict satisfies a condition
 
 A condition's `is_met` SHALL become `true` only when its evaluator invocation's parsed verdict is
-`ConditionVerdict::True`. A `False` or `Unknown` verdict SHALL leave `is_met` as `false`.
+`ConditionVerdict::True`. A `False` or `Unknown` verdict SHALL leave `is_met` as `false` and SHALL
+release the evaluation's claim for retry under the same coordinate, rather than settling it
+fulfilled — a negative or uncertain verdict is a normal, expected answer that later circumstances
+may change, not a permanent fact about the condition.
 
 #### Scenario: A True verdict marks the condition met
 
@@ -41,6 +44,20 @@ A condition's `is_met` SHALL become `true` only when its evaluator invocation's 
 
 - **WHEN** evaluating an unmet condition produces a `ConditionVerdict::False`
 - **THEN** that condition's `is_met` remains `false`
+
+#### Scenario: A negative verdict's coordinate remains claimable for retry
+
+- **WHEN** a condition evaluator returns a `False` or `Unknown` verdict
+- **THEN** the same coordinate remains claimable — a later `evaluate` call (after the dossier is
+  reopened and the underlying circumstance changes) re-invokes the evaluator instead of failing
+  with "already settled"
+
+#### Scenario: A prior negative verdict does not block a later evaluate call from reaching a subsequent condition
+
+- **WHEN** one condition already evaluated to `False` or `Unknown` in an earlier `evaluate` call,
+  and a later `evaluate` call reaches it again before any later, still-unattempted condition
+- **THEN** the later call still reaches and evaluates the subsequent condition, rather than
+  failing on the earlier one and never getting there
 
 ### Requirement: An evaluator's reasoning is sealed
 
