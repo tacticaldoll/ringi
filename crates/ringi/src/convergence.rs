@@ -1,9 +1,9 @@
 //! The convergence seam: ringi's one place that speaks suunta.
 //!
 //! Ringi owns no convergence mechanism of its own. It projects a revision's residual —
-//! every dissent and every risk — onto a suunta `Bearing` of targets and reports a
-//! per-target satisfaction verdict; suunta computes the residual and decides whether the
-//! dossier has converged. Per `docs/naming.md`'s seam rule, suunta's vocabulary
+//! every dissent, every risk, and every question — onto a suunta `Bearing` of targets and
+//! reports a per-target satisfaction verdict; suunta computes the residual and decides
+//! whether the dossier has converged. Per `docs/naming.md`'s seam rule, suunta's vocabulary
 //! (`Bearing`, `Sigil`, `Sounding`, …) is confined to this module and never names a ringi
 //! domain type.
 //!
@@ -25,6 +25,11 @@ fn dissent_sigil(id: &uuid::Uuid) -> Sigil {
 /// The `Sigil` for a risk target, stable across soundings.
 fn risk_sigil(id: &uuid::Uuid) -> Sigil {
     Sigil::new(format!("risk:{id}"))
+}
+
+/// The `Sigil` for a question target, stable across soundings.
+fn question_sigil(id: &uuid::Uuid) -> Sigil {
+    Sigil::new(format!("question:{id}"))
 }
 
 /// A provenance-bound resolution is positive certification that a target is met; an open
@@ -73,6 +78,18 @@ fn project(revision: &Revision) -> (Bearing<()>, Sounding) {
             satisfaction: verdict(&risk.resolved_by),
         });
     }
+    for question in &revision.questions {
+        let sigil = question_sigil(&question.id);
+        targets.push(Correction::new(
+            sigil.clone(),
+            Reversibility::Reversible,
+            (),
+        ));
+        findings.push(SatisfactionFinding {
+            target: sigil,
+            satisfaction: verdict(&question.answered_by),
+        });
+    }
 
     (
         Bearing::new(targets),
@@ -103,10 +120,18 @@ pub fn is_ready_for_decision(revision: &Revision) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::revision::{Digest, Dissent, EventRef, Resolution, Risk};
+    use crate::revision::{Digest, Dissent, EventRef, Question, Resolution, Risk};
     use uuid::Uuid;
 
     fn revision_with(dissents: Vec<Dissent>, risks: Vec<Risk>) -> Revision {
+        revision_with_questions(dissents, risks, vec![])
+    }
+
+    fn revision_with_questions(
+        dissents: Vec<Dissent>,
+        risks: Vec<Risk>,
+        questions: Vec<Question>,
+    ) -> Revision {
         Revision {
             revision_id: Uuid::new_v4(),
             parent_digest: None,
@@ -116,6 +141,7 @@ mod tests {
             positions: vec![],
             dissents,
             risks,
+            questions,
         }
     }
 
@@ -214,6 +240,34 @@ mod tests {
             vec![],
         );
         assert!(!is_ready(&rev));
+    }
+
+    #[test]
+    fn an_unanswered_question_is_not_ready() {
+        let rev = revision_with_questions(
+            vec![],
+            vec![],
+            vec![Question {
+                id: Uuid::new_v4(),
+                text: "which supplier?".into(),
+                answered_by: None,
+            }],
+        );
+        assert!(!is_ready(&rev));
+    }
+
+    #[test]
+    fn an_answered_question_is_reported_and_converges() {
+        let rev = revision_with_questions(
+            vec![],
+            vec![],
+            vec![Question {
+                id: Uuid::new_v4(),
+                text: "which supplier?".into(),
+                answered_by: resolved(),
+            }],
+        );
+        assert!(is_ready(&rev));
     }
 
     #[test]

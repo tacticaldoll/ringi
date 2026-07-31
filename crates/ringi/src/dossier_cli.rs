@@ -79,6 +79,7 @@ pub fn submit_command(id: &str, store: &mut DossierStore) -> anyhow::Result<()> 
         positions: vec![],
         dissents: vec![],
         risks: vec![],
+        questions: vec![],
     };
     initial_revision.content_digest = initial_revision.compute_digest();
     store.commit_successor_revision(id, None, &initial_revision, &[])?;
@@ -359,6 +360,7 @@ mod tests {
                     positions: vec![],
                     dissents: vec![],
                     risks: vec![],
+                    questions: vec![],
                 },
                 &[],
             )
@@ -435,6 +437,7 @@ mod tests {
                     positions: vec![],
                     dissents: vec![],
                     risks: vec![],
+                    questions: vec![],
                 },
                 &[],
             )
