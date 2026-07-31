@@ -5,9 +5,11 @@ use uuid::Uuid;
 
 use crate::agent::{AgentAdapter, AgentRequest, AgentRole, SubprocessAdapter};
 use crate::deliberation::{
-    ArbitrationOutput, apply_arbitration, build_arbitrator_prompt, build_respondent_prompt,
+    ArbitrationOutput, ConditionEvaluationOutput, ConditionVerdict, apply_arbitration,
+    build_arbitrator_prompt, build_condition_evaluator_prompt, build_respondent_prompt,
 };
 use crate::dossier::{LifecycleState, SubmittedDossier};
+use crate::event::{Event, EventPayload, InvocationCoordinate};
 use crate::store::DossierStore;
 
 pub fn run_deliberation(
@@ -171,11 +173,92 @@ fn mark_ready(
     Ok(())
 }
 
+/// Judges every unmet condition on a `ReadyForDecision` dossier with an isolated
+/// `ConditionEvaluator` invocation. A `True` verdict marks the condition met; `False` and
+/// `Unknown` leave it unmet — conservative, matching the Unknown-is-never-success principle
+/// `convergence` already applies to dissents and risks. Each verdict's reasoning is sealed.
+pub fn evaluate_conditions(
+    dossier_id: &str,
+    dossier_json: &str,
+    store: &mut DossierStore,
+) -> anyhow::Result<()> {
+    let mut dossier: SubmittedDossier = serde_json::from_str(dossier_json)?;
+
+    if dossier.state != LifecycleState::ReadyForDecision {
+        bail!(
+            "Dossier {} is not ReadyForDecision (state: {:?})",
+            dossier_id,
+            dossier.state
+        );
+    }
+
+    let revision = store
+        .get_latest_revision(dossier_id)?
+        .context("No revisions found - cannot evaluate conditions")?;
+    let evaluator_program = dossier.locked_settings.roles.respondent.clone();
+
+    for index in 0..dossier.conditions.len() {
+        if dossier.conditions[index].is_met {
+            continue;
+        }
+
+        let prompt = build_condition_evaluator_prompt(&dossier.conditions[index], &revision);
+        let evaluator = SubprocessAdapter::new(evaluator_program.clone(), vec![]);
+        let req = AgentRequest {
+            role: AgentRole::ConditionEvaluator,
+            session_instruction: None,
+            prompt,
+            working_dir: std::env::current_dir()?,
+            timeout: Duration::from_secs(60),
+            env: HashMap::new(),
+        };
+
+        let res = evaluator.run(req)?;
+        if res.exit_code != Some(0) {
+            bail!(
+                "Condition evaluator failed for condition {}: {}",
+                dossier.conditions[index].id,
+                res.stderr
+            );
+        }
+
+        let metadata = res
+            .metadata
+            .context("Condition evaluator produced no structured output")?;
+        let output: ConditionEvaluationOutput = serde_json::from_value(metadata)?;
+
+        let mut evaluation_event = Event::new_sealed(
+            EventPayload::SealedEvaluation {
+                evaluator: format!("condition:{}", dossier.conditions[index].id),
+                reasoning: output.reason.clone(),
+            },
+            index as u64,
+        );
+        evaluation_event.coordinate = Some(InvocationCoordinate {
+            dossier_id: Uuid::parse_str(dossier_id).unwrap_or_default(),
+            role: format!("condition_evaluator:{}", dossier.conditions[index].id),
+            input_digest: revision.content_digest.clone(),
+            turn: index as u32,
+            attempt: 1,
+        });
+
+        if output.verdict == ConditionVerdict::True {
+            dossier.conditions[index].is_met = true;
+        }
+
+        let updated_json = serde_json::to_string(&dossier)?;
+        store.record_condition_evaluation(dossier_id, &updated_json, &evaluation_event)?;
+    }
+
+    Ok(())
+}
+
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use crate::dossier::{
-        ArbitrationSettings, Limits, LockedSettings, RoleBindings, StrategyPreset, SubmittedDossier,
+        ArbitrationSettings, Condition, Limits, LockedSettings, RoleBindings, StrategyPreset,
+        SubmittedDossier,
     };
     use crate::revision::{Digest, Dissent, Revision};
     use std::os::unix::fs::PermissionsExt;
@@ -211,6 +294,34 @@ mod tests {
         let json = store.get_dossier_state(id).unwrap().unwrap();
         let d: SubmittedDossier = serde_json::from_str(&json).unwrap();
         d.state
+    }
+
+    fn ready_for_decision_with_conditions(
+        id: Uuid,
+        respondent: &str,
+        conditions: Vec<Condition>,
+    ) -> SubmittedDossier {
+        SubmittedDossier {
+            id,
+            state: LifecycleState::ReadyForDecision,
+            locked_settings: LockedSettings {
+                arbitration: ArbitrationSettings::resolve(StrategyPreset::Economy),
+                limits: Limits { max_turns: 1 },
+                roles: RoleBindings {
+                    respondent: respondent.to_string(),
+                    arbitrator: "unused".to_string(),
+                },
+            },
+            conditions,
+        }
+    }
+
+    fn one_condition() -> Condition {
+        Condition {
+            id: Uuid::new_v4(),
+            description: "Budget is under $1000".into(),
+            is_met: false,
+        }
     }
 
     #[test]
@@ -359,6 +470,171 @@ mod tests {
         assert_eq!(latest.current_understanding, "u2");
         // The unresolved dissent persists, so the dossier has not converged.
         assert_eq!(state_of(&store, &id_str), LifecycleState::Deliberating);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    fn base_revision() -> Revision {
+        Revision {
+            revision_id: Uuid::new_v4(),
+            parent_digest: None,
+            content_digest: Digest("dig".into()),
+            original_proposal: "p".into(),
+            current_understanding: "u".into(),
+            positions: vec![],
+            dissents: vec![],
+            risks: vec![],
+        }
+    }
+
+    #[test]
+    fn a_true_verdict_marks_the_condition_met() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("ringi-eval-true-{}.sqlite", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+
+        let id = Uuid::new_v4();
+        let id_str = id.to_string();
+        let condition = one_condition();
+        let evaluator = fake_agent(
+            "eval-true.sh",
+            "echo '{\"verdict\":\"True\",\"reason\":\"under budget\",\"provenance\":[]}'",
+        );
+
+        let mut store = DossierStore::open(&path).unwrap();
+        let dossier = ready_for_decision_with_conditions(
+            id,
+            evaluator.to_str().unwrap(),
+            vec![condition.clone()],
+        );
+        let json = serde_json::to_string(&dossier).unwrap();
+        store.insert_dossier(&id_str, &json).unwrap();
+        store
+            .commit_successor_revision(&id_str, None, &base_revision(), &[])
+            .unwrap();
+
+        evaluate_conditions(&id_str, &json, &mut store).unwrap();
+
+        let state_json = store.get_dossier_state(&id_str).unwrap().unwrap();
+        let updated: SubmittedDossier = serde_json::from_str(&state_json).unwrap();
+        assert!(updated.conditions[0].is_met);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_false_verdict_leaves_the_condition_unmet() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("ringi-eval-false-{}.sqlite", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+
+        let id = Uuid::new_v4();
+        let id_str = id.to_string();
+        let evaluator = fake_agent(
+            "eval-false.sh",
+            "echo '{\"verdict\":\"False\",\"reason\":\"over budget\",\"provenance\":[]}'",
+        );
+
+        let mut store = DossierStore::open(&path).unwrap();
+        let dossier = ready_for_decision_with_conditions(
+            id,
+            evaluator.to_str().unwrap(),
+            vec![one_condition()],
+        );
+        let json = serde_json::to_string(&dossier).unwrap();
+        store.insert_dossier(&id_str, &json).unwrap();
+        store
+            .commit_successor_revision(&id_str, None, &base_revision(), &[])
+            .unwrap();
+
+        evaluate_conditions(&id_str, &json, &mut store).unwrap();
+
+        let state_json = store.get_dossier_state(&id_str).unwrap().unwrap();
+        let updated: SubmittedDossier = serde_json::from_str(&state_json).unwrap();
+        assert!(!updated.conditions[0].is_met);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn an_unknown_verdict_leaves_the_condition_unmet() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("ringi-eval-unknown-{}.sqlite", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+
+        let id = Uuid::new_v4();
+        let id_str = id.to_string();
+        let evaluator = fake_agent(
+            "eval-unknown.sh",
+            "echo '{\"verdict\":\"Unknown\",\"reason\":\"cannot tell\",\"provenance\":[]}'",
+        );
+
+        let mut store = DossierStore::open(&path).unwrap();
+        let dossier = ready_for_decision_with_conditions(
+            id,
+            evaluator.to_str().unwrap(),
+            vec![one_condition()],
+        );
+        let json = serde_json::to_string(&dossier).unwrap();
+        store.insert_dossier(&id_str, &json).unwrap();
+        store
+            .commit_successor_revision(&id_str, None, &base_revision(), &[])
+            .unwrap();
+
+        evaluate_conditions(&id_str, &json, &mut store).unwrap();
+
+        let state_json = store.get_dossier_state(&id_str).unwrap().unwrap();
+        let updated: SubmittedDossier = serde_json::from_str(&state_json).unwrap();
+        assert!(!updated.conditions[0].is_met);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn evaluate_conditions_rejects_a_dossier_not_ready_for_decision() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("ringi-eval-badstate-{}.sqlite", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+
+        let id = Uuid::new_v4();
+        let id_str = id.to_string();
+        let dossier = submitted(id, "unused", "unused", 1);
+        let json = serde_json::to_string(&dossier).unwrap();
+
+        let mut store = DossierStore::open(&path).unwrap();
+        store.insert_dossier(&id_str, &json).unwrap();
+
+        let err = evaluate_conditions(&id_str, &json, &mut store).unwrap_err();
+        assert!(err.to_string().contains("not ReadyForDecision"));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn sealed_evaluator_reasoning_never_reaches_a_respondent_prompt() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("ringi-eval-sealed-{}.sqlite", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+
+        let id = Uuid::new_v4();
+        let id_str = id.to_string();
+        let evaluator = fake_agent(
+            "eval-sealed.sh",
+            "echo '{\"verdict\":\"False\",\"reason\":\"sealed reason: vendor unresponsive\",\"provenance\":[]}'",
+        );
+
+        let mut store = DossierStore::open(&path).unwrap();
+        let dossier = ready_for_decision_with_conditions(
+            id,
+            evaluator.to_str().unwrap(),
+            vec![one_condition()],
+        );
+        let json = serde_json::to_string(&dossier).unwrap();
+        store.insert_dossier(&id_str, &json).unwrap();
+        store
+            .commit_successor_revision(&id_str, None, &base_revision(), &[])
+            .unwrap();
+
+        evaluate_conditions(&id_str, &json, &mut store).unwrap();
+
+        let latest = store.get_latest_revision(&id_str).unwrap().unwrap();
+        let prompt = build_respondent_prompt("Anything to add?", &latest);
+        assert!(!prompt.contains("sealed reason: vendor unresponsive"));
         let _ = std::fs::remove_file(&path);
     }
 }

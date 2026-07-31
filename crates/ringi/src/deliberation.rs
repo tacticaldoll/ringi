@@ -1,3 +1,4 @@
+use crate::dossier::Condition;
 use crate::revision::Revision;
 
 /// Build the prompt for a respondent agent.
@@ -171,12 +172,63 @@ pub struct ConditionEvaluationOutput {
     pub provenance: Vec<crate::revision::EventRef>,
 }
 
+/// Build the prompt for a condition-evaluator agent, judging exactly one condition.
+///
+/// Isolated by construction: it contains only the dossier's public SSOT and the single
+/// condition under judgment — never another condition, never a prior evaluator's sealed
+/// reasoning, never a dissent or risk. Evaluators verify; they do not coach each other.
+pub fn build_condition_evaluator_prompt(condition: &Condition, revision: &Revision) -> String {
+    let mut prompt = String::new();
+    prompt.push_str("You are an isolated condition evaluator.\n\n");
+    prompt.push_str("## Original Proposal\n");
+    prompt.push_str(&revision.original_proposal);
+    prompt.push_str("\n\n## Current Understanding\n");
+    prompt.push_str(&revision.current_understanding);
+    prompt.push_str("\n\n## Condition to Judge\n");
+    prompt.push_str(&condition.description);
+    prompt.push_str(
+        "\n\nDecide whether this condition is currently satisfied. Respond with your reasoning, \
+         then end your reply with exactly one line of compact JSON (no surrounding prose, no \
+         pretty-printing) of the form: \
+         {\"verdict\": \"True\" | \"False\" | \"Unknown\", \"reason\": \"...\", \"provenance\": []}",
+    );
+    prompt
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::event::{Event, EventPayload, EventVisibility};
     use crate::revision::{Digest, Dissent};
     use uuid::Uuid;
+
+    #[test]
+    fn condition_evaluator_prompt_does_not_leak_another_condition() {
+        let revision = Revision {
+            revision_id: Uuid::new_v4(),
+            parent_digest: None,
+            content_digest: Digest("dig".into()),
+            original_proposal: "Plan".into(),
+            current_understanding: "Plan".into(),
+            positions: vec![],
+            dissents: vec![],
+            risks: vec![],
+        };
+        let first = Condition {
+            id: Uuid::new_v4(),
+            description: "Budget is under $1000".into(),
+            is_met: false,
+        };
+        let second = Condition {
+            id: Uuid::new_v4(),
+            description: "Security review completed".into(),
+            is_met: false,
+        };
+
+        let prompt = build_condition_evaluator_prompt(&first, &revision);
+        assert!(prompt.contains(&first.description));
+        assert!(!prompt.contains(&second.description));
+    }
 
     #[test]
     fn respondent_prompt_includes_only_unresolved_items() {

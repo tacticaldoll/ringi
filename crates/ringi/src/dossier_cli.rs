@@ -84,6 +84,13 @@ pub fn continue_command(id: &str, store: &mut DossierStore) -> anyhow::Result<()
     crate::deliberate_loop::run_deliberation(id, &state_json, store)
 }
 
+pub fn evaluate_command(id: &str, store: &mut DossierStore) -> anyhow::Result<()> {
+    let state_json = store
+        .get_dossier_state(id)?
+        .context("Dossier not found in store")?;
+    crate::deliberate_loop::evaluate_conditions(id, &state_json, store)
+}
+
 pub fn transition_command(
     id: &str,
     target_state: LifecycleState,
@@ -198,9 +205,24 @@ pub fn inspect_command(id: &str, store: &DossierStore) -> anyhow::Result<()> {
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    use crate::dossier::{
+        ArbitrationSettings, Limits, LockedSettings, RoleBindings, StrategyPreset, SubmittedDossier,
+    };
+    use crate::revision::{Digest, Revision};
+    use std::os::unix::fs::PermissionsExt;
+    use uuid::Uuid;
+
+    fn fake_agent(name: &str, body: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("ringi-cli-agent-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(name);
+        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
 
     // Mutates the process's current directory for the duration of the test (submit_command
     // reads/writes dossier files relative to CWD). Safe today because no other test in this
@@ -232,5 +254,74 @@ mod tests {
         let revision = store.get_latest_revision(&id).unwrap().unwrap();
         assert_ne!(revision.content_digest.0, "initial-digest");
         assert_eq!(revision.content_digest, revision.compute_digest());
+    }
+
+    #[test]
+    fn a_dossier_reaches_approved_once_evaluate_satisfies_its_only_condition() {
+        let dir = std::env::temp_dir().join(format!("ringi-approve-cli-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // transition_command writes an archive under `.ringi/dossiers` on reaching Approved.
+        std::fs::create_dir_all(dir.join(".ringi").join("dossiers")).unwrap();
+
+        let evaluator = fake_agent(
+            "eval-true.sh",
+            "echo '{\"verdict\":\"True\",\"reason\":\"under budget\",\"provenance\":[]}'",
+        );
+
+        let id = Uuid::new_v4();
+        let id_str = id.to_string();
+        let dossier = SubmittedDossier {
+            id,
+            state: LifecycleState::ReadyForDecision,
+            locked_settings: LockedSettings {
+                arbitration: ArbitrationSettings::resolve(StrategyPreset::Economy),
+                limits: Limits { max_turns: 1 },
+                roles: RoleBindings {
+                    respondent: evaluator.to_str().unwrap().to_string(),
+                    arbitrator: "unused".to_string(),
+                },
+            },
+            conditions: vec![Condition {
+                id: Uuid::new_v4(),
+                description: "Budget is under $1000".into(),
+                is_met: false,
+            }],
+        };
+        let json = serde_json::to_string(&dossier).unwrap();
+
+        let mut store = DossierStore::open(dir.join("store.sqlite")).unwrap();
+        store.insert_dossier(&id_str, &json).unwrap();
+        store
+            .commit_successor_revision(
+                &id_str,
+                None,
+                &Revision {
+                    revision_id: Uuid::new_v4(),
+                    parent_digest: None,
+                    content_digest: Digest("dig".into()),
+                    original_proposal: "p".into(),
+                    current_understanding: "u".into(),
+                    positions: vec![],
+                    dissents: vec![],
+                    risks: vec![],
+                },
+                &[],
+            )
+            .unwrap();
+
+        let original_cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&dir).unwrap();
+        let result = (|| -> anyhow::Result<()> {
+            evaluate_command(&id_str, &mut store)?;
+            transition_command(&id_str, LifecycleState::Approved, &mut store)
+        })();
+        std::env::set_current_dir(&original_cwd).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+
+        result.unwrap();
+        let state_json = store.get_dossier_state(&id_str).unwrap().unwrap();
+        let updated: SubmittedDossier = serde_json::from_str(&state_json).unwrap();
+        assert_eq!(updated.state, LifecycleState::Approved);
     }
 }
