@@ -37,7 +37,9 @@ backoff or retry itself; it only reports success or failure.
 Ringi SHALL perform a round's build work by running a Builder agent through the agent seam: an
 `AgentRoundBuilder` SHALL turn a round into a Builder `AgentRequest` (in the run's workspace,
 bounded by a timeout) and run it through an `AgentAdapter`, returning the round's build outcome.
-It SHALL depend only on the `AgentAdapter` seam, never on a specific CLI, so any adapter can back
+The Builder `AgentRequest` SHALL convey the run's task, so the agent is asked to carry out the
+task (the prompt is task-aware; conveying the round's open findings remains a later change). It
+SHALL depend only on the `AgentAdapter` seam, never on a specific CLI, so any adapter can back
 it. A clean exit (a zero exit code) SHALL be a successful build; any other result — a non-zero
 exit, a spawn failure, or a timeout — SHALL be a failed attempt the loop retries via pacta's
 deferred reclaim. The builder SHALL NOT compute backoff or retry itself; it only reports success
@@ -47,6 +49,10 @@ distinct seams (`RoundBuilder` and `StepRunner`), never one composable trait.
 #### Scenario: A round runs its Builder agent
 - **WHEN** the round loop builds a round through an `AgentRoundBuilder`
 - **THEN** the builder invokes the configured Builder agent through the adapter in the workspace and returns the round's build outcome
+
+#### Scenario: The Builder agent receives the run's task
+- **WHEN** a round is built for a run configured with a task
+- **THEN** the Builder agent's prompt conveys that task
 
 #### Scenario: A clean exit succeeds the round's build
 - **WHEN** the Builder agent exits with a zero exit code

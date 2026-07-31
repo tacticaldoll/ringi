@@ -236,16 +236,24 @@ pub trait RoundBuilder {
 #[derive(Debug, Clone)]
 pub struct AgentRoundBuilder<A> {
     adapter: A,
+    task: String,
     workspace: PathBuf,
     timeout: Duration,
 }
 
 impl<A: AgentAdapter> AgentRoundBuilder<A> {
-    /// A Builder round runner over `adapter`, building each round in `workspace` bounded by
-    /// `timeout`.
-    pub fn new(adapter: A, workspace: impl Into<PathBuf>, timeout: Duration) -> Self {
+    /// A Builder round runner over `adapter` for `task`, building each round in `workspace`
+    /// bounded by `timeout`. The task seeds the Builder prompt, so the agent is asked to carry it
+    /// out.
+    pub fn new(
+        adapter: A,
+        task: impl Into<String>,
+        workspace: impl Into<PathBuf>,
+        timeout: Duration,
+    ) -> Self {
         Self {
             adapter,
+            task: task.into(),
             workspace: workspace.into(),
             timeout,
         }
@@ -256,7 +264,9 @@ impl<A: AgentAdapter> RoundBuilder for AgentRoundBuilder<A> {
     fn build(&self, round: usize) -> StepOutcome {
         let request = AgentRequest {
             role: AgentRole::Builder,
-            prompt: format!("Perform build for round {round}."),
+            // Task-aware: the run's task rides in the prompt. Conveying the round's open findings
+            // is a later change; `build` still takes only the round.
+            prompt: format!("Task: {}\n\nPerform build for round {round}.", self.task),
             workspace: self.workspace.clone(),
             timeout: self.timeout,
             env: HashMap::new(),
@@ -1201,6 +1211,7 @@ mod tests {
         ) -> AgentRoundBuilder<SubprocessAdapter> {
             AgentRoundBuilder::new(
                 SubprocessAdapter::new(script.to_string_lossy().to_string(), Vec::new()),
+                "do the thing",
                 workspace,
                 Duration::from_secs(5),
             )
