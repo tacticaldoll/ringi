@@ -1,3 +1,14 @@
+//! The durable SQLite store for the dossier domain: `dossiers` (whole-`SubmittedDossier` JSON,
+//! including its locked settings and conditions), `revisions`, `dissents`/`risks` with their
+//! resolution provenance, and `events`. This is not the pacta claim/lease state — that table and
+//! connection live in `registry.rs`, opened separately against the same file.
+//!
+//! **Known dead schema:** `init` also creates `locked_settings`, `conditions`, and `decisions`
+//! tables that nothing in this crate ever inserts into or selects from — `SubmittedDossier`
+//! (locked settings and conditions included) is persisted as one JSON blob in `dossiers.state`
+//! instead. Left in place rather than silently dropped by this doc pass; removing dead schema is
+//! a decision for its own change, not a side effect of writing this one down.
+
 use std::path::Path;
 
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};

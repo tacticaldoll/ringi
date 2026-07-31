@@ -1,3 +1,12 @@
+//! Pure prompt-building and arbitration-output application — no I/O, no persistence, no agent
+//! invocation. `build_respondent_prompt`/`build_arbitrator_prompt`/
+//! `build_condition_evaluator_prompt` each read only a `Revision` and, for the last, one
+//! `Condition` in isolation; none reads the raw event log (see `event.rs`'s
+//! `RespondentContextProjection` note on why that currently suffices for the sealed-evaluation
+//! invariant). `apply_arbitration` is the seam between an agent's raw structured output and the
+//! validated successor: it delegates the actual acceptance decision to
+//! `Revision::propose_successor` rather than re-deciding it here.
+
 use crate::dossier::Condition;
 use crate::revision::Revision;
 

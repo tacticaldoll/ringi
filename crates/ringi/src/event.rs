@@ -1,3 +1,16 @@
+//! The append-only event log's domain types: `Event`, its `EventPayload` variants, visibility
+//! (`Public`/`Sealed`), and `InvocationCoordinate` (the identity an Agent-CLI invocation is
+//! claimed and settled under in `registry.rs`).
+//!
+//! **`RespondentContextProjection` is tested scaffolding, not yet wired into the live path.** It
+//! filters `RawTranscript`/`SealedEvaluation` payloads out of a slice of events, but
+//! `deliberation.rs::build_respondent_prompt` never calls it — it builds a prompt directly from a
+//! `Revision`'s fields, which structurally contain no event content at all. The
+//! sealed-evaluation invariant holds today because of that type shape, not because this
+//! projection filters anything in production; it is ready for the day a respondent prompt is
+//! ever built from the raw event log instead. Events themselves are append-only; nothing here
+//! mutates a committed event.
+
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 

@@ -1,3 +1,15 @@
+//! The two Agent-CLI invocation loops: `run_deliberation` (a submitted dossier's turn loop —
+//! respondent answers, arbitrator proposes a successor, suunta decides convergence via
+//! `convergence::is_ready`) and `evaluate_conditions` (the isolated per-condition evaluator
+//! loop for a `ReadyForDecision` dossier). Every invocation of either loop is claimed through
+//! `registry.rs`'s `SqliteRegistry` before the agent runs and settled after, via the shared
+//! `claimed_invoke` helper — the one place this crate composes pacta for invocation
+//! crash-recovery, so neither loop repeats that checkpoint inline.
+//!
+//! Neither loop authors SSOT content itself: `run_deliberation` applies the arbitrator's
+//! proposed successor through `Revision::propose_successor` (via `deliberation::
+//! apply_arbitration`), and readiness is never an agent claim.
+
 use anyhow::{Context, bail};
 use std::collections::HashMap;
 use std::time::Duration;

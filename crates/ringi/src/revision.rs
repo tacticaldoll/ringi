@@ -1,3 +1,13 @@
+//! `Revision`: the current dossier revision as work SSOT (per `PROJECT.md`), with `Dissent`/`Risk`
+//! as its addressable, provenance-bound residual items and `Digest` as its content identity.
+//!
+//! `propose_successor` is the one place a successor revision is validated before it may replace
+//! the current one: an unresolved dissent or risk cannot be silently dropped, and a resolution
+//! must carry a non-empty reason and event provenance — the conservative-retention invariant
+//! `BACKLOG.md` states as a settled decision. It also sets the successor's `parent_digest` and
+//! recomputes its own content-derived `content_digest`, so the chain of digests is only ever
+//! produced here, never assembled by a caller.
+
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use uuid::Uuid;
