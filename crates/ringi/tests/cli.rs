@@ -181,6 +181,44 @@ fn status_of_an_unknown_run_fails_clearly() {
 }
 
 #[test]
+fn resume_of_an_unknown_run_fails_clearly() {
+    let dir = fixture("resume-unknown", 0);
+    let output = ringi()
+        .current_dir(&dir)
+        .args(["resume", "no-such-run"])
+        .output()
+        .expect("ringi resume executes");
+    assert!(
+        !output.status.success(),
+        "resuming an unknown run must exit non-zero"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("not resumable"), "stderr={stderr}");
+}
+
+#[test]
+fn resume_of_a_finished_run_fails_clearly() {
+    let dir = fixture("resume-finished", 0);
+
+    // Drive a run to completion; a converged run is terminal, not resumable.
+    let run = run_in(&dir);
+    assert!(run.status.success());
+    let run_id = run_id_from(&String::from_utf8_lossy(&run.stdout));
+
+    let output = ringi()
+        .current_dir(&dir)
+        .args(["resume", &run_id])
+        .output()
+        .expect("ringi resume executes");
+    assert!(
+        !output.status.success(),
+        "resuming a finished run must exit non-zero"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("not resumable"), "stderr={stderr}");
+}
+
+#[test]
 fn init_provisions_the_store_and_scaffolds_config_without_clobber() {
     let dir = scratch("init");
 

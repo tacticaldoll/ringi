@@ -16,7 +16,8 @@ use anyhow::{Context, bail};
 use clap::{Parser, Subcommand};
 
 use ringi::config;
-use ringi::run;
+use ringi::reconcile::Resume;
+use ringi::run::{self, RunConfig};
 use ringi::store::{RunRecord, RunState, RunStore, SqliteRegistry};
 
 /// The ringi orchestrator command line.
@@ -61,8 +62,8 @@ fn main() -> anyhow::Result<ExitCode> {
         Command::Init => init_command().map(|()| ExitCode::SUCCESS),
         Command::Run { workspace, task } => run_command(&workspace, &task),
         Command::Status { run_id } => status_command(&run_id),
+        Command::Resume { run_id } => resume_command(&run_id),
         Command::Inspect { .. }
-        | Command::Resume { .. }
         | Command::Cancel { .. }
         | Command::Approvals
         | Command::Approve { .. }
@@ -118,14 +119,53 @@ fn run_command(workspace: &str, task: &str) -> anyhow::Result<ExitCode> {
     store
         .create_run(&config.run_id, &config.task, workspace)
         .with_context(|| "recording the run")?;
+    // Announce the id on stderr before driving, so an interrupted run's id is discoverable for
+    // `ringi resume` (stdout carries the final outcome).
+    eprintln!("run {} started", config.run_id);
+    drive_and_present(&store, &config, None)
+}
 
-    // The registry backend is the durable store; `run_from_config`'s `make` cannot return a
-    // Result, but `open_store` above already proved the file is openable, so this is an invariant.
+/// Resume an interrupted run: reconstruct its config from the recorded task/workspace plus the
+/// current config file, load its checkpoint, and drive it forward from there.
+fn resume_command(run_id: &str) -> anyhow::Result<ExitCode> {
+    let store = open_store()?;
+    let Some(resume) = store
+        .load_resume(run_id)
+        .with_context(|| "loading the run to resume")?
+    else {
+        bail!("run '{run_id}' is not resumable: unknown id or already finished");
+    };
+    let record = store
+        .get_run(run_id)
+        .with_context(|| "reading the run")?
+        .expect("load_resume succeeded, so the run exists");
+
+    // The run id is a deterministic function of workspace + task, so rebuilding the config from
+    // the recorded workspace/task (plus the current config file) reproduces the same run id.
+    let file = config::load(Path::new(config::CONFIG_FILE))?;
+    let config = file.into_run_config(PathBuf::from(&record.workspace), record.task);
+    drive_and_present(&store, &config, Some(resume))
+}
+
+/// Drive a run (fresh or resumed) over the durable store, journalling progress, then record and
+/// present the outcome. `run_from_config` itself never persists — the journal here does.
+fn drive_and_present(
+    store: &RunStore,
+    config: &RunConfig,
+    resume: Option<Resume>,
+) -> anyhow::Result<ExitCode> {
+    // The registry backend is the durable store; the `make` closure cannot return a Result, but
+    // `open_store` already proved the file is openable, so this is an invariant.
     let db = store_path();
-    let report = run::run_from_config(&config, move |pacts, lease| {
-        SqliteRegistry::open_seeded(&db, pacts, lease)
-            .expect("durable registry opens over the provisioned store")
-    });
+    let report = run::run_from_config_journaled(
+        config,
+        move |pacts, lease| {
+            SqliteRegistry::open_seeded(&db, pacts, lease)
+                .expect("durable registry opens over the provisioned store")
+        },
+        &store.journal(&config.run_id),
+        resume,
+    );
 
     store
         .complete_run(
