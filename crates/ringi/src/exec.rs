@@ -2,13 +2,12 @@
 //! bounded by a timeout, with concurrent pipe drain.
 //!
 //! This is ringi's own blood — one place to get non-shell spawning, environment
-//! minimization, and timeout-kill right. Both the agent seam and the
-//! verification runner compose it rather than each hand-rolling a spawn
-//! path. The transport does not judge outcomes: it reports the exit code and captured
-//! output; whether that is acceptable is the caller's decision.
+//! minimization, and timeout-kill right. The agent seam composes it rather than
+//! hand-rolling a spawn path. The transport does not judge outcomes: it reports the exit
+//! code and captured output; whether that is acceptable is the caller's decision.
 //!
-//! Synchronous by design (v1 runs one run at a time); async is deferred until concurrency
-//! forces it.
+//! Synchronous by design (v1 runs one invocation at a time); async is deferred until
+//! concurrency forces it.
 
 use std::collections::HashMap;
 use std::io::{Read, Write};

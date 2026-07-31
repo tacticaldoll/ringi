@@ -3,16 +3,18 @@
 Shipped truth lives in `openspec/specs/`; active proposed truth lives in `openspec/changes/`.
 This file records product decisions, deferred work, and the family stance behind them.
 
-## Current Reframe
+## Completed Reframe
 
-`reframe-ringi-deliberation` changes ringi from a code-work executor into a deliberation
+`reframe-ringi-deliberation` changed ringi from a code-work executor into a deliberation
 application. Its unit of automation is one dossier: a human drafts and submits a proposal, Agent
 CLIs answer bounded questions synchronously, an independent arbitrator maintains the current SSOT,
-and a human concludes the dossier with an immutable archive.
+and a human concludes the dossier with an immutable archive. The change is complete: shipped
+requirements live in `openspec/specs/`, and every capability below reflects the dossier domain, not
+the deleted execution model.
 
-The existing Builder/Reviewer/Verify loop proved the family-composition bet. It is historical
-evidence, not the future product shape. The active change removes workspace execution semantics
-rather than relabelling them.
+The prior Builder/Reviewer/Verify loop proved the family-composition bet. It is historical
+evidence, not the current product shape; the reframe removed workspace execution semantics rather
+than relabelling them.
 
 ## Settled Decisions
 
@@ -51,9 +53,22 @@ rather than relabelling them.
 Pacta, suunta, and shaahid remain published sibling mechanisms. Ringi retains each only if the new
 domain exercises its public contract honestly:
 
-- pacta may own claim/settle/reclaim of a durable Agent invocation;
-- shaahid may prevent a reclaimed fixed invocation from calling a CLI twice;
-- suunta may evaluate the residual of questions, dissent, risks, and conditions.
+- **pacta owns claim/settle/reclaim of a durable Agent invocation.** `registry.rs`'s
+  `SqliteRegistry` claims a pact before invoking a respondent, arbitrator, or condition-evaluator,
+  and settles it after — fulfilled on success, released for retry on failure — so a crash between
+  invoking the agent and committing its result is durably distinguishable from a completed attempt.
+  Revived from a pre-reframe implementation this repo had already conformance-proven, deleted as
+  collateral with the old execution model rather than for being unfit.
+- **suunta owns evaluation of the residual of dissents and risks.** `convergence.rs` projects a
+  revision's open dissents and risks onto a suunta `Bearing` and reports readiness from
+  `Residual::is_converged()`; readiness is never an agent claim.
+- **shaahid remains deferred.** Nothing exercises its `Deed`/`Seal`/`Fingerprint`/`witness`
+  contract yet. `event.rs`'s `InvocationCoordinate::idempotency_key` and
+  `store.rs`'s `is_invocation_completed` are dedup scaffolding that no code path consults before
+  invoking an agent — a real gap pacta's claim/release now covers for the crash-recovery case, but
+  shaahid's structural-contradiction detection (a drifted `Fingerprint` under a repeated `Seal`) is
+  not attached to anything. Unlike pacta, no structural-dependency assessment has concluded shaahid
+  should be adopted; that assessment, not just the attachment, is still outstanding.
 
 No dependency is retained for historical loyalty. Ringi must not recreate any retained mechanism.
 
