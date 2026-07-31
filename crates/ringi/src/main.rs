@@ -46,6 +46,8 @@ enum Command {
     Invalidate { id: String },
     /// Add a condition to an approved-with-conditions dossier.
     Condition { id: String, description: String },
+    /// Judge a dossier's unmet conditions with isolated evaluator invocations.
+    Evaluate { id: String },
 }
 
 fn main() -> anyhow::Result<std::process::ExitCode> {
@@ -108,6 +110,11 @@ fn main() -> anyhow::Result<std::process::ExitCode> {
         Command::Condition { id, description } => {
             let mut store = open_dossier_store()?;
             ringi::dossier_cli::add_condition_command(&id, &description, &mut store)
+                .map(|()| std::process::ExitCode::SUCCESS)
+        }
+        Command::Evaluate { id } => {
+            let mut store = open_dossier_store()?;
+            ringi::dossier_cli::evaluate_command(&id, &mut store)
                 .map(|()| std::process::ExitCode::SUCCESS)
         }
     }

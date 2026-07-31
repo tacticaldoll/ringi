@@ -151,6 +151,53 @@ pub fn init(conn: &Connection) -> Result<(), StoreError> {
     Ok(())
 }
 
+/// An event's SQL row shape, shared by every place that inserts one, so the
+/// visibility/payload/idempotency-key mapping is written once.
+struct EventRow<'a> {
+    visibility: &'static str,
+    payload_type: &'static str,
+    payload_content: Option<&'a str>,
+    evaluator: Option<&'a str>,
+    reasoning: Option<&'a str>,
+    idempotency_key: Option<String>,
+}
+
+impl<'a> From<&'a crate::event::Event> for EventRow<'a> {
+    fn from(event: &'a crate::event::Event) -> Self {
+        let visibility = match event.visibility {
+            crate::event::EventVisibility::Public => "public",
+            crate::event::EventVisibility::Sealed => "sealed",
+        };
+        let (payload_type, payload_content, evaluator, reasoning) = match &event.payload {
+            crate::event::EventPayload::RawTranscript(c) => {
+                ("raw_transcript", Some(c.as_str()), None, None)
+            }
+            crate::event::EventPayload::Synthesis(c) => ("synthesis", Some(c.as_str()), None, None),
+            crate::event::EventPayload::PublicRecord(c) => {
+                ("public_record", Some(c.as_str()), None, None)
+            }
+            crate::event::EventPayload::SealedEvaluation {
+                evaluator,
+                reasoning,
+            } => (
+                "sealed_evaluation",
+                None,
+                Some(evaluator.as_str()),
+                Some(reasoning.as_str()),
+            ),
+        };
+        let idempotency_key = event.coordinate.as_ref().map(|c| c.idempotency_key());
+        Self {
+            visibility,
+            payload_type,
+            payload_content,
+            evaluator,
+            reasoning,
+            idempotency_key,
+        }
+    }
+}
+
 /// The new store mapping the dossier domain.
 pub struct DossierStore {
     conn: Connection,
@@ -347,45 +394,21 @@ impl DossierStore {
 
         // 2. Insert events
         let mut stmt_events = tx.prepare(
-            "INSERT INTO events (id, dossier_id, timestamp, visibility, payload_type, payload_content, evaluator, reasoning, idempotency_key) 
+            "INSERT INTO events (id, dossier_id, timestamp, visibility, payload_type, payload_content, evaluator, reasoning, idempotency_key)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
         )?;
         for event in events {
-            let vis = match event.visibility {
-                crate::event::EventVisibility::Public => "public",
-                crate::event::EventVisibility::Sealed => "sealed",
-            };
-            let (p_type, p_content, eval, reason) = match &event.payload {
-                crate::event::EventPayload::RawTranscript(c) => {
-                    ("raw_transcript", Some(c.as_str()), None, None)
-                }
-                crate::event::EventPayload::Synthesis(c) => {
-                    ("synthesis", Some(c.as_str()), None, None)
-                }
-                crate::event::EventPayload::PublicRecord(c) => {
-                    ("public_record", Some(c.as_str()), None, None)
-                }
-                crate::event::EventPayload::SealedEvaluation {
-                    evaluator,
-                    reasoning,
-                } => (
-                    "sealed_evaluation",
-                    None,
-                    Some(evaluator.as_str()),
-                    Some(reasoning.as_str()),
-                ),
-            };
-            let idempotency_key = event.coordinate.as_ref().map(|c| c.idempotency_key());
+            let row = EventRow::from(event);
             stmt_events.execute(params![
                 event.id.to_string(),
                 dossier_id,
                 event.timestamp,
-                vis,
-                p_type,
-                p_content,
-                eval,
-                reason,
-                idempotency_key
+                row.visibility,
+                row.payload_type,
+                row.payload_content,
+                row.evaluator,
+                row.reasoning,
+                row.idempotency_key
             ])?;
         }
         drop(stmt_events);
@@ -497,6 +520,45 @@ impl DossierStore {
         }
         drop(stmt_risks);
         drop(stmt_risk_prov);
+
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Atomically persists a condition-evaluation outcome: the dossier's updated state (with
+    /// the judged condition's `is_met` flipped, if the verdict was `True`) and the evaluator's
+    /// sealed reasoning as one event, in a single transaction.
+    pub fn record_condition_evaluation(
+        &mut self,
+        dossier_id: &str,
+        updated_dossier_json: &str,
+        event: &crate::event::Event,
+    ) -> Result<(), StoreError> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+        tx.execute(
+            "INSERT OR REPLACE INTO dossiers (id, state) VALUES (?, ?)",
+            params![dossier_id, updated_dossier_json],
+        )?;
+
+        let row = EventRow::from(event);
+        tx.execute(
+            "INSERT INTO events (id, dossier_id, timestamp, visibility, payload_type, payload_content, evaluator, reasoning, idempotency_key)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            params![
+                event.id.to_string(),
+                dossier_id,
+                event.timestamp,
+                row.visibility,
+                row.payload_type,
+                row.payload_content,
+                row.evaluator,
+                row.reasoning,
+                row.idempotency_key
+            ],
+        )?;
 
         tx.commit()?;
         Ok(())
