@@ -7,8 +7,8 @@
 //! (`Bearing`, `Sigil`, `Sounding`, …) is confined to this module and never names a ringi
 //! domain type.
 //!
-//! Readiness for a human decision is therefore a mechanical fact ([`is_ready`]), not a
-//! claim an agent may assert.
+//! Readiness for a human decision is therefore a mechanical fact
+//! ([`is_ready_for_decision`]), not a claim an agent may assert.
 
 use suunta::{
     Bearing, Correction, Fix, Reversibility, Satisfaction, SatisfactionFinding, Sigil, Sounding,
@@ -80,12 +80,24 @@ fn project(revision: &Revision) -> (Bearing<()>, Sounding) {
     )
 }
 
-/// Whether the revision has converged and is ready for a human decision. This is the sole
-/// readiness signal; no agent output participates.
+/// Whether the revision's residual has converged. An un-deliberated root revision starts with
+/// an empty residual, which converges trivially — callers deciding whether a dossier is ready
+/// for a human decision must use [`is_ready_for_decision`], which also requires a parent, not
+/// this function alone.
 #[must_use]
 pub fn is_ready(revision: &Revision) -> bool {
     let (bearing, sounding) = project(revision);
     plan_residual(bearing, &sounding).is_converged()
+}
+
+/// Whether the revision is ready for a human decision: it must be a successor (have a parent),
+/// not the un-deliberated root, *and* have a converged residual. The root's empty residual
+/// converges trivially per [`is_ready`], but an empty residual before any deliberation has
+/// happened means "not yet deliberated," never "resolved" — so the root is never ready on its
+/// own, regardless of what `is_ready` alone reports.
+#[must_use]
+pub fn is_ready_for_decision(revision: &Revision) -> bool {
+    revision.parent_digest.is_some() && is_ready(revision)
 }
 
 #[cfg(test)]
@@ -119,6 +131,22 @@ mod tests {
     #[test]
     fn empty_residual_is_ready() {
         assert!(is_ready(&revision_with(vec![], vec![])));
+    }
+
+    #[test]
+    fn an_undeliberated_root_is_not_ready_for_decision() {
+        // The root has no parent and an empty residual, so `is_ready` alone reports true —
+        // but nothing has been deliberated yet, so it must not be ready for a decision.
+        let root = revision_with(vec![], vec![]);
+        assert!(is_ready(&root));
+        assert!(!is_ready_for_decision(&root));
+    }
+
+    #[test]
+    fn a_converged_successor_is_ready_for_decision() {
+        let mut successor = revision_with(vec![], vec![]);
+        successor.parent_digest = Some(Digest("parent".into()));
+        assert!(is_ready_for_decision(&successor));
     }
 
     #[test]
