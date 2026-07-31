@@ -649,6 +649,38 @@ pub struct RoundReport {
     pub open_findings: Vec<String>,
 }
 
+/// The durable checkpoint seam: the round loop notifies its journal so a run's progress survives
+/// the process and can be resumed. It is ringi's own durable state (the shaahid `witness` function
+/// stays sans-I/O) — the loop never reads it back; a resume is reconstructed via [`Resume`]. The
+/// no-op implementation for `()` is what the in-memory composition uses, so that path is unchanged.
+pub trait RunJournal {
+    /// A round's build attempt succeeded. Called **before** the pact is settled, so the deed is
+    /// durable even if the process dies in the settlement window.
+    fn build_succeeded(&self, round: usize);
+    /// A round completed without convergence: the run should resume at `next_round` with these
+    /// findings still open.
+    fn checkpoint(&self, next_round: usize, open_findings: &[Finding]);
+}
+
+/// The no-op journal — the in-memory composition records nothing and behaves exactly as before.
+impl RunJournal for () {
+    fn build_succeeded(&self, _round: usize) {}
+    fn checkpoint(&self, _next_round: usize, _open_findings: &[Finding]) {}
+}
+
+/// A resume point loaded from a durable journal: where to re-enter the loop and the state to
+/// restore. `built_rounds` reconstructs the witness ledger (a build `Deed` is determined by
+/// `(run, round)`), so a reclaimed in-flight attempt attaches instead of re-executing.
+#[derive(Debug, Clone)]
+pub struct Resume {
+    /// The round to re-enter at (completed rounds are not revisited).
+    pub start_round: usize,
+    /// Rounds whose build already succeeded — used to rebuild the ledger.
+    pub built_rounds: Vec<usize>,
+    /// Findings still open at the checkpoint.
+    pub open_findings: Vec<Finding>,
+}
+
 /// Run the round loop over any backend built by `make`, driving Build → Verify → (green?)
 /// Review until suunta reports convergence or the round bound is hit. Production entry point
 /// (no fault injection). The goal `G` and each open finding are suunta targets; the goal's
@@ -677,11 +709,49 @@ where
         verification,
         make,
         HashSet::new(),
+        &(),
+        None,
+    )
+}
+
+/// Run the round loop with a durable `journal` (recording progress) and an optional `resume`
+/// point (re-entering an interrupted run from its checkpoint). This is the entry point the
+/// durable CLI drives: `resume = None` for a fresh run, `Some(..)` to continue an interrupted one.
+/// The loop body is identical to [`run_rounds`]; only checkpointing and re-entry differ.
+pub fn run_rounds_journaled<B, Rv, V, F, Reg>(
+    run_id: &str,
+    builder: &B,
+    reviewer: &Rv,
+    verification: &V,
+    make: F,
+    journal: &dyn RunJournal,
+    resume: Option<Resume>,
+) -> RoundReport
+where
+    B: RoundBuilder,
+    Rv: ReviewRunner,
+    V: Verification,
+    Reg: Registry,
+    Reg::Error: std::fmt::Debug,
+    F: FnOnce(Vec<Pact>, u64) -> Reg,
+{
+    run_rounds_core(
+        run_id,
+        builder,
+        reviewer,
+        verification,
+        make,
+        HashSet::new(),
+        journal,
+        resume,
     )
 }
 
 /// The round loop body, parameterized over the backend and the (test-only) set of rounds whose
 /// build settlement is lost once — to exercise reclaim + exactly-once at the attempt grain.
+// Internal orchestration helper: the roles, backend, fault-injection, journal, and resume point
+// are each distinct and generic, so bundling them buys no clarity.
+#[allow(clippy::too_many_arguments)]
 fn run_rounds_core<B, Rv, V, F, Reg>(
     run_id: &str,
     builder: &B,
@@ -689,6 +759,8 @@ fn run_rounds_core<B, Rv, V, F, Reg>(
     verification: &V,
     make: F,
     mut lapse_rounds: HashSet<usize>,
+    journal: &dyn RunJournal,
+    resume: Option<Resume>,
 ) -> RoundReport
 where
     B: RoundBuilder,
@@ -715,6 +787,17 @@ where
     let mut rounds = 0usize;
     let mut converged = false;
 
+    // Resume: rebuild the witness ledger from the recorded succeeded rounds (a build Deed is
+    // determined by (run, round)), restore the open findings, and re-enter at the checkpoint —
+    // so completed rounds are not revisited and a reclaimed attempt attaches, not re-executes.
+    if let Some(resume) = resume {
+        for r in resume.built_rounds {
+            ledger.push(seam::build_deed(run_id, r, 0));
+        }
+        open_findings = resume.open_findings;
+        rounds = resume.start_round;
+    }
+
     while rounds < MAX_ROUNDS {
         let round = rounds;
         rounds += 1;
@@ -728,6 +811,7 @@ where
             builder,
             &mut now,
             lapse_rounds.remove(&round),
+            journal,
         );
         *build_executions.entry(round).or_insert(0) += execs;
         if was_reclaimed {
@@ -769,6 +853,8 @@ where
             converged = true;
             break;
         }
+        // Not converged: checkpoint so a resume re-enters at the next round with these findings.
+        journal.checkpoint(rounds, &open_findings);
     }
 
     RoundReport {
@@ -786,6 +872,8 @@ where
 /// whether it was reclaimed after a lost settlement. If `lapse`, the first successful settlement
 /// is dropped, so the lease lapses and the attempt is reclaimed — shaahid then attaches and the
 /// build is not re-executed.
+// Internal helper: each argument is a distinct role/coordinate; bundling buys no clarity.
+#[allow(clippy::too_many_arguments)]
 fn drive_build<B, Reg>(
     registry: &Reg,
     ledger: &mut Vec<Deed<seam::Seal>>,
@@ -794,6 +882,7 @@ fn drive_build<B, Reg>(
     builder: &B,
     now: &mut u64,
     mut lapse: bool,
+    journal: &dyn RunJournal,
 ) -> (u32, bool)
 where
     B: RoundBuilder,
@@ -834,6 +923,9 @@ where
                 StepOutcome::Succeeded => {
                     execs += 1;
                     ledger.push(deed);
+                    // Journal the success BEFORE settling, so a crash in the settlement window
+                    // leaves a durable deed and the reclaim on resume attaches, not re-executes.
+                    journal.build_succeeded(round);
                     if lapse {
                         // Drop this settlement: do not fulfill. Advance past the lease so the
                         // pact lapses and is reclaimed next iteration -> witnessed as Attach.
@@ -1072,6 +1164,8 @@ mod tests {
             &ScriptVerify { pass_from: 1 },
             MemoryRegistry::seeded,
             HashSet::from([1usize]),
+            &(),
+            None,
         );
 
         assert!(
@@ -1086,6 +1180,116 @@ mod tests {
             report.build_executions.get(&1).copied(),
             Some(1),
             "round 1 built exactly once despite the reclaim: {report:?}"
+        );
+    }
+
+    #[test]
+    fn a_resumed_run_re_enters_at_the_checkpoint_round() {
+        // Resume at round 2 with rounds 0 and 1 already built: the loop must not revisit them.
+        let reviewer = ScriptReview {
+            schedule: vec![Vec::new(); 5],
+        };
+        let resume = Resume {
+            start_round: 2,
+            built_rounds: vec![0, 1],
+            open_findings: Vec::new(),
+        };
+        let report = run_rounds_journaled(
+            "run-resume-offset",
+            &ScriptBuild,
+            &reviewer,
+            &ScriptVerify { pass_from: 2 },
+            MemoryRegistry::seeded,
+            &(),
+            Some(resume),
+        );
+        assert!(report.converged, "a resumed run converges: {report:?}");
+        assert!(
+            !report.build_executions.contains_key(&0) && !report.build_executions.contains_key(&1),
+            "completed rounds must not be re-entered: {report:?}"
+        );
+        assert_eq!(
+            report.build_executions.get(&2).copied(),
+            Some(1),
+            "the resume round runs its build: {report:?}"
+        );
+    }
+
+    #[test]
+    fn a_recorded_build_is_not_re_executed_on_resume() {
+        // The crash-in-settlement-window case: round 0's build succeeded (recorded) but was not
+        // settled, so on resume round 0 is re-entered. The ledger — reconstructed from
+        // `built_rounds` — makes the attempt attach instead of re-executing.
+        let reviewer = ScriptReview {
+            schedule: vec![Vec::new()],
+        };
+        let resume = Resume {
+            start_round: 0,
+            built_rounds: vec![0],
+            open_findings: Vec::new(),
+        };
+        let report = run_rounds_journaled(
+            "run-resume-attach",
+            &ScriptBuild,
+            &reviewer,
+            &ScriptVerify { pass_from: 0 },
+            MemoryRegistry::seeded,
+            &(),
+            Some(resume),
+        );
+        assert!(report.converged, "must converge: {report:?}");
+        assert_eq!(
+            report.build_executions.get(&0).copied(),
+            Some(0),
+            "a build recorded before the crash must attach, not re-execute: {report:?}"
+        );
+        assert!(
+            report.reclaimed.contains(&0),
+            "round 0 attaches to the recorded deed: {report:?}"
+        );
+    }
+
+    /// A journal that captures the loop's checkpoints and recorded deeds in memory, for asserting
+    /// what would be persisted.
+    #[derive(Default)]
+    struct CapturingJournal {
+        built: std::cell::RefCell<Vec<usize>>,
+        last_checkpoint: std::cell::RefCell<Option<usize>>,
+    }
+    impl RunJournal for CapturingJournal {
+        fn build_succeeded(&self, round: usize) {
+            self.built.borrow_mut().push(round);
+        }
+        fn checkpoint(&self, next_round: usize, _open: &[Finding]) {
+            *self.last_checkpoint.borrow_mut() = Some(next_round);
+        }
+    }
+
+    #[test]
+    fn a_run_journals_its_builds_and_checkpoints() {
+        // Two rounds before convergence: the journal sees each build and a checkpoint advancing
+        // the next round, so an interrupted run would have a resume point.
+        let reviewer = ScriptReview {
+            schedule: vec![vec![finding("F1")], Vec::new()],
+        };
+        let journal = CapturingJournal::default();
+        let report = run_rounds_journaled(
+            "run-journal",
+            &ScriptBuild,
+            &reviewer,
+            &ScriptVerify { pass_from: 0 },
+            MemoryRegistry::seeded,
+            &journal,
+            None,
+        );
+        assert!(report.converged, "{report:?}");
+        assert!(
+            journal.built.borrow().contains(&0),
+            "the first build is journalled before settlement"
+        );
+        assert!(
+            journal.last_checkpoint.borrow().is_some(),
+            "a non-converged round checkpoints the next round"
         );
     }
 
