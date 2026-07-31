@@ -44,25 +44,25 @@ digest is not vulnerable to those sections having been tampered with after rende
 
 ### Requirement: A rendered archive includes every condition and its final status
 
-`render_archive` SHALL render a `## Conditions` section listing every condition attached to the
-dossier, each as a checkbox line showing its description and whether it was ultimately met. The
-section SHALL NOT be omitted for a dossier with no conditions; it SHALL render an explicit
-placeholder instead.
+`render_archive` SHALL render a `## Conditions` section listing every condition on the dossier's
+final revision, each as a checkbox line showing its description and whether it was ultimately
+satisfied (`resolved_by` is `Some`). The section SHALL NOT be omitted for a dossier with no
+conditions; it SHALL render an explicit placeholder instead.
 
-#### Scenario: A met condition renders as checked
+#### Scenario: A satisfied condition renders as checked
 
-- **WHEN** a dossier has a condition whose `is_met` is `true`
+- **WHEN** a dossier's final revision has a condition whose `resolved_by` is `Some`
 - **THEN** the rendered archive's Conditions section shows that condition's description as a
   checked box
 
-#### Scenario: An unmet condition renders as unchecked
+#### Scenario: An unsatisfied condition renders as unchecked
 
-- **WHEN** a dossier has a condition whose `is_met` is `false`
+- **WHEN** a dossier's final revision has a condition whose `resolved_by` is `None`
 - **THEN** the rendered archive's Conditions section shows that condition's description as an
   unchecked box
 
 #### Scenario: A dossier with no conditions still renders the section
 
-- **WHEN** a dossier has no conditions attached
+- **WHEN** a dossier's final revision has no conditions
 - **THEN** the rendered archive still includes a Conditions section, with an explicit placeholder
   noting none exist

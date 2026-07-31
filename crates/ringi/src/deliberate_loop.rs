@@ -283,17 +283,19 @@ fn mark_ready(
     Ok(())
 }
 
-/// Judges every unmet condition on a `ReadyForDecision` dossier with an isolated
-/// `ConditionEvaluator` invocation. A `True` verdict marks the condition met; `False` and
-/// `Unknown` leave it unmet — conservative, matching the Unknown-is-never-success principle
-/// `convergence` already applies to dissents and risks. Each verdict's reasoning is sealed.
+/// Judges every unmet condition on a `ReadyForDecision` dossier's latest revision with an
+/// isolated `ConditionEvaluator` invocation. A `True` verdict applies a
+/// `ConditionMove::Satisfy` (producing a successor revision, exactly like the arbitrator path);
+/// `False` and `Unknown` apply no move at all — conservative, matching the Unknown-is-never-
+/// success principle `convergence` already applies to dissents and risks. Each verdict's
+/// reasoning is sealed regardless of outcome.
 pub fn evaluate_conditions(
     dossier_id: &str,
     dossier_json: &str,
     store: &mut DossierStore,
     registry: &SqliteRegistry,
 ) -> anyhow::Result<()> {
-    let mut dossier: SubmittedDossier = serde_json::from_str(dossier_json)?;
+    let dossier: SubmittedDossier = serde_json::from_str(dossier_json)?;
 
     if dossier.state != LifecycleState::ReadyForDecision {
         bail!(
@@ -303,21 +305,25 @@ pub fn evaluate_conditions(
         );
     }
 
-    let revision = store
+    let mut current_revision = store
         .get_latest_revision(dossier_id)?
         .context("No revisions found - cannot evaluate conditions")?;
     let evaluator_program = dossier.locked_settings.roles.respondent.clone();
 
-    for index in 0..dossier.conditions.len() {
-        if dossier.conditions[index].is_met {
+    for index in 0..current_revision.conditions.len() {
+        if current_revision.conditions[index].resolved_by.is_some() {
             continue;
         }
 
-        let prompt = build_condition_evaluator_prompt(&dossier.conditions[index], &revision);
+        let prompt = build_condition_evaluator_prompt(
+            &current_revision.conditions[index],
+            &current_revision,
+        );
+        let condition_id = current_revision.conditions[index].id;
         let coordinate = InvocationCoordinate {
             dossier_id: Uuid::parse_str(dossier_id).unwrap_or_default(),
-            role: format!("condition_evaluator:{}", dossier.conditions[index].id),
-            input_digest: revision.content_digest.clone(),
+            role: format!("condition_evaluator:{condition_id}"),
+            input_digest: current_revision.content_digest.clone(),
             turn: index as u32,
             attempt: 1,
         };
@@ -331,7 +337,6 @@ pub fn evaluate_conditions(
             env: HashMap::new(),
         };
 
-        let condition_id = dossier.conditions[index].id;
         let output = claimed_invoke(
             registry,
             &coordinate,
@@ -358,25 +363,47 @@ pub fn evaluate_conditions(
 
         let mut evaluation_event = Event::new_sealed(
             EventPayload::SealedEvaluation {
-                evaluator: format!("condition:{}", dossier.conditions[index].id),
+                evaluator: format!("condition:{condition_id}"),
                 reasoning: output.reason.clone(),
             },
             index as u64,
         );
 
-        // Only a True verdict's event carries its coordinate: that settlement is terminal, so
-        // recording it under this idempotency key exactly once is correct. A False/Unknown
-        // verdict's coordinate stays unset here — the coordinate itself remains claimable (see
-        // `claimed_invoke`'s `Settlement::Retryable`), and a later retry under that same
-        // coordinate must be able to record its own event without colliding with this one on
-        // `idempotency_key` (events, unlike pacts, have no notion of "retry" of their own).
         if output.verdict == ConditionVerdict::True {
+            // Only a True verdict's event carries its coordinate: that settlement is terminal,
+            // so recording it under this idempotency key exactly once is correct. A
+            // False/Unknown verdict's coordinate stays unset — the coordinate itself remains
+            // claimable (see `claimed_invoke`'s `Settlement::Retryable`), and a later retry under
+            // that same coordinate must be able to record its own event without colliding with
+            // this one on `idempotency_key`.
             evaluation_event.coordinate = Some(coordinate);
-            dossier.conditions[index].is_met = true;
-        }
 
-        let updated_json = serde_json::to_string(&dossier)?;
-        store.record_condition_evaluation(dossier_id, &updated_json, &evaluation_event)?;
+            // The satisfying resolution's provenance is this very sealed evaluation event, not
+            // whatever event ids the evaluator's own output happened to name — a condition
+            // evaluator (unlike an arbitrator) has no prior respondent claim to cite, and this
+            // event is inserted in the same commit below, so the reference is always real.
+            let resolution = crate::revision::Resolution {
+                reason: output.reason.clone(),
+                provenance: vec![crate::revision::EventRef {
+                    event_id: evaluation_event.id,
+                }],
+            };
+            let successor = current_revision
+                .apply_condition_move(crate::revision::ConditionMove::Satisfy {
+                    id: condition_id,
+                    resolution,
+                })
+                .map_err(|e| anyhow::anyhow!(e))?;
+            store.commit_successor_revision(
+                dossier_id,
+                Some(&current_revision.revision_id.to_string()),
+                &successor,
+                std::slice::from_ref(&evaluation_event),
+            )?;
+            current_revision = successor;
+        } else {
+            store.record_event(dossier_id, &evaluation_event)?;
+        }
     }
 
     Ok(())
@@ -386,10 +413,9 @@ pub fn evaluate_conditions(
 mod tests {
     use super::*;
     use crate::dossier::{
-        ArbitrationSettings, Condition, Limits, LockedSettings, RoleBindings, StrategyPreset,
-        SubmittedDossier,
+        ArbitrationSettings, Limits, LockedSettings, RoleBindings, StrategyPreset, SubmittedDossier,
     };
-    use crate::revision::{Digest, Dissent, Revision};
+    use crate::revision::{Condition, Digest, Dissent, Revision};
     use std::os::unix::fs::PermissionsExt;
     use std::path::PathBuf;
     use uuid::Uuid;
@@ -421,7 +447,6 @@ mod tests {
                     arbitrator: arbitrator.to_string(),
                 },
             },
-            conditions: vec![],
         }
     }
 
@@ -431,11 +456,9 @@ mod tests {
         d.state
     }
 
-    fn ready_for_decision_with_conditions(
-        id: Uuid,
-        respondent: &str,
-        conditions: Vec<Condition>,
-    ) -> SubmittedDossier {
+    /// A `ReadyForDecision` dossier. Conditions no longer live here — they live on the revision
+    /// committed alongside it (see `base_revision_with_conditions`).
+    fn ready_for_decision(id: Uuid, respondent: &str) -> SubmittedDossier {
         SubmittedDossier {
             id,
             state: LifecycleState::ReadyForDecision,
@@ -447,16 +470,27 @@ mod tests {
                     arbitrator: "unused".to_string(),
                 },
             },
-            conditions,
         }
+    }
+
+    fn base_revision_with_conditions(conditions: Vec<Condition>) -> Revision {
+        let mut revision = base_revision();
+        revision.conditions = conditions;
+        revision
     }
 
     fn one_condition() -> Condition {
         Condition {
             id: Uuid::new_v4(),
             description: "Budget is under $1000".into(),
-            is_met: false,
+            resolved_by: None,
         }
+    }
+
+    /// The latest revision's conditions, as read back from the store — the new source of truth
+    /// for "is this condition satisfied," replacing the old `dossier.conditions` read.
+    fn conditions_of(store: &DossierStore, id: &str) -> Vec<Condition> {
+        store.get_latest_revision(id).unwrap().unwrap().conditions
     }
 
     #[test]
@@ -488,6 +522,7 @@ mod tests {
             dissents: vec![],
             risks: vec![],
             questions: vec![],
+            conditions: vec![],
         };
         store
             .commit_successor_revision(&id_str, None, &converged, &[])
@@ -538,6 +573,7 @@ mod tests {
             dissents: vec![],
             risks: vec![],
             questions: vec![],
+            conditions: vec![],
         };
         store
             .commit_successor_revision(&id_str, None, &initial, &[])
@@ -597,6 +633,7 @@ mod tests {
             }],
             risks: vec![],
             questions: vec![],
+            conditions: vec![],
         };
         store
             .commit_successor_revision(&id_str, None, &initial, &[])
@@ -647,6 +684,7 @@ mod tests {
             dissents: vec![],
             risks: vec![],
             questions: vec![],
+            conditions: vec![],
         };
         store
             .commit_successor_revision(&id_str, None, &initial, &[])
@@ -719,6 +757,7 @@ mod tests {
             dissents: vec![],
             risks: vec![],
             questions: vec![],
+            conditions: vec![],
         };
         store
             .commit_successor_revision(&id_str, None, &initial, &[])
@@ -792,6 +831,7 @@ mod tests {
             dissents: vec![],
             risks: vec![],
             questions: vec![],
+            conditions: vec![],
         };
         store
             .commit_successor_revision(&id_str, None, &initial, &[])
@@ -881,6 +921,7 @@ mod tests {
             dissents: vec![],
             risks: vec![],
             questions: vec![],
+            conditions: vec![],
         };
         store
             .commit_successor_revision(&id_str, None, &initial, &[])
@@ -923,6 +964,7 @@ mod tests {
             dissents: vec![],
             risks: vec![],
             questions: vec![],
+            conditions: vec![],
         }
     }
 
@@ -945,22 +987,22 @@ mod tests {
 
         let mut store = DossierStore::open(&path).unwrap();
         let registry = test_registry(&path);
-        let dossier = ready_for_decision_with_conditions(
-            id,
-            evaluator.to_str().unwrap(),
-            vec![condition.clone()],
-        );
+        let dossier = ready_for_decision(id, evaluator.to_str().unwrap());
         let json = serde_json::to_string(&dossier).unwrap();
         store.insert_dossier(&id_str, &json).unwrap();
         store
-            .commit_successor_revision(&id_str, None, &base_revision(), &[])
+            .commit_successor_revision(
+                &id_str,
+                None,
+                &base_revision_with_conditions(vec![condition.clone()]),
+                &[],
+            )
             .unwrap();
 
         evaluate_conditions(&id_str, &json, &mut store, &registry).unwrap();
 
-        let state_json = store.get_dossier_state(&id_str).unwrap().unwrap();
-        let updated: SubmittedDossier = serde_json::from_str(&state_json).unwrap();
-        assert!(updated.conditions[0].is_met);
+        let conditions = conditions_of(&store, &id_str);
+        assert!(conditions[0].resolved_by.is_some());
         let _ = std::fs::remove_file(&path);
     }
 
@@ -982,22 +1024,22 @@ mod tests {
 
         let mut store = DossierStore::open(&path).unwrap();
         let registry = test_registry(&path);
-        let dossier = ready_for_decision_with_conditions(
-            id,
-            evaluator.to_str().unwrap(),
-            vec![one_condition()],
-        );
+        let dossier = ready_for_decision(id, evaluator.to_str().unwrap());
         let json = serde_json::to_string(&dossier).unwrap();
         store.insert_dossier(&id_str, &json).unwrap();
         store
-            .commit_successor_revision(&id_str, None, &base_revision(), &[])
+            .commit_successor_revision(
+                &id_str,
+                None,
+                &base_revision_with_conditions(vec![one_condition()]),
+                &[],
+            )
             .unwrap();
 
         evaluate_conditions(&id_str, &json, &mut store, &registry).unwrap();
 
-        let state_json = store.get_dossier_state(&id_str).unwrap().unwrap();
-        let updated: SubmittedDossier = serde_json::from_str(&state_json).unwrap();
-        assert!(!updated.conditions[0].is_met);
+        let conditions = conditions_of(&store, &id_str);
+        assert!(conditions[0].resolved_by.is_none());
         let _ = std::fs::remove_file(&path);
     }
 
@@ -1019,22 +1061,22 @@ mod tests {
 
         let mut store = DossierStore::open(&path).unwrap();
         let registry = test_registry(&path);
-        let dossier = ready_for_decision_with_conditions(
-            id,
-            evaluator.to_str().unwrap(),
-            vec![one_condition()],
-        );
+        let dossier = ready_for_decision(id, evaluator.to_str().unwrap());
         let json = serde_json::to_string(&dossier).unwrap();
         store.insert_dossier(&id_str, &json).unwrap();
         store
-            .commit_successor_revision(&id_str, None, &base_revision(), &[])
+            .commit_successor_revision(
+                &id_str,
+                None,
+                &base_revision_with_conditions(vec![one_condition()]),
+                &[],
+            )
             .unwrap();
 
         evaluate_conditions(&id_str, &json, &mut store, &registry).unwrap();
 
-        let state_json = store.get_dossier_state(&id_str).unwrap().unwrap();
-        let updated: SubmittedDossier = serde_json::from_str(&state_json).unwrap();
-        assert!(!updated.conditions[0].is_met);
+        let conditions = conditions_of(&store, &id_str);
+        assert!(conditions[0].resolved_by.is_none());
         let _ = std::fs::remove_file(&path);
     }
 
@@ -1060,15 +1102,16 @@ mod tests {
 
         let mut store = DossierStore::open(&path).unwrap();
         let registry = test_registry(&path);
-        let dossier = ready_for_decision_with_conditions(
-            id,
-            evaluator.to_str().unwrap(),
-            vec![condition.clone()],
-        );
+        let dossier = ready_for_decision(id, evaluator.to_str().unwrap());
         let json = serde_json::to_string(&dossier).unwrap();
         store.insert_dossier(&id_str, &json).unwrap();
         store
-            .commit_successor_revision(&id_str, None, &base_revision(), &[])
+            .commit_successor_revision(
+                &id_str,
+                None,
+                &base_revision_with_conditions(vec![condition.clone()]),
+                &[],
+            )
             .unwrap();
 
         evaluate_conditions(&id_str, &json, &mut store, &registry).unwrap();
@@ -1113,15 +1156,16 @@ mod tests {
 
         let mut store = DossierStore::open(&path).unwrap();
         let registry = test_registry(&path);
-        let dossier = ready_for_decision_with_conditions(
-            id,
-            evaluator.to_str().unwrap(),
-            vec![condition.clone()],
-        );
+        let dossier = ready_for_decision(id, evaluator.to_str().unwrap());
         let json = serde_json::to_string(&dossier).unwrap();
         store.insert_dossier(&id_str, &json).unwrap();
         store
-            .commit_successor_revision(&id_str, None, &base_revision(), &[])
+            .commit_successor_revision(
+                &id_str,
+                None,
+                &base_revision_with_conditions(vec![condition.clone()]),
+                &[],
+            )
             .unwrap();
 
         evaluate_conditions(&id_str, &json, &mut store, &registry).unwrap();
@@ -1160,12 +1204,12 @@ mod tests {
         let first = Condition {
             id: Uuid::new_v4(),
             description: "Load test passed".into(),
-            is_met: false,
+            resolved_by: None,
         };
         let second = Condition {
             id: Uuid::new_v4(),
             description: "Legal sign-off received".into(),
-            is_met: false,
+            resolved_by: None,
         };
         // Reads the prompt on stdin and answers based on which condition it is judging, so a
         // single evaluator program can distinguish two conditions in one dossier.
@@ -1181,26 +1225,26 @@ mod tests {
 
         let mut store = DossierStore::open(&path).unwrap();
         let registry = test_registry(&path);
-        let dossier = ready_for_decision_with_conditions(
-            id,
-            evaluator.to_str().unwrap(),
-            vec![first, second.clone()],
-        );
+        let dossier = ready_for_decision(id, evaluator.to_str().unwrap());
         let json = serde_json::to_string(&dossier).unwrap();
         store.insert_dossier(&id_str, &json).unwrap();
         store
-            .commit_successor_revision(&id_str, None, &base_revision(), &[])
+            .commit_successor_revision(
+                &id_str,
+                None,
+                &base_revision_with_conditions(vec![first, second.clone()]),
+                &[],
+            )
             .unwrap();
 
         evaluate_conditions(&id_str, &json, &mut store, &registry).unwrap();
 
         // Even though the first condition's verdict was negative, the loop must still reach and
         // evaluate the second, still-unattempted condition in the same call.
-        let state_json = store.get_dossier_state(&id_str).unwrap().unwrap();
-        let updated: SubmittedDossier = serde_json::from_str(&state_json).unwrap();
-        assert!(!updated.conditions[0].is_met);
+        let conditions = conditions_of(&store, &id_str);
+        assert!(conditions[0].resolved_by.is_none());
         assert!(
-            updated.conditions[1].is_met,
+            conditions[1].resolved_by.is_some(),
             "a negative verdict on an earlier condition must not prevent the later condition \
              from being reached and evaluated"
         );
@@ -1240,21 +1284,21 @@ mod tests {
 
         let mut store = DossierStore::open(&path).unwrap();
         let registry = test_registry(&path);
-        let dossier = ready_for_decision_with_conditions(
-            id,
-            evaluator.to_str().unwrap(),
-            vec![condition.clone()],
-        );
+        let dossier = ready_for_decision(id, evaluator.to_str().unwrap());
         let json = serde_json::to_string(&dossier).unwrap();
         store.insert_dossier(&id_str, &json).unwrap();
         store
-            .commit_successor_revision(&id_str, None, &base_revision(), &[])
+            .commit_successor_revision(
+                &id_str,
+                None,
+                &base_revision_with_conditions(vec![condition.clone()]),
+                &[],
+            )
             .unwrap();
 
         evaluate_conditions(&id_str, &json, &mut store, &registry).unwrap();
-        let after_first = store.get_dossier_state(&id_str).unwrap().unwrap();
-        let after_first: SubmittedDossier = serde_json::from_str(&after_first).unwrap();
-        assert!(!after_first.conditions[0].is_met);
+        let after_first = conditions_of(&store, &id_str);
+        assert!(after_first[0].resolved_by.is_none());
 
         std::fs::write(&fix_flag_path, "").unwrap();
         // Re-read the (unchanged) dossier JSON, matching how a CLI would re-invoke evaluate on
@@ -1262,10 +1306,9 @@ mod tests {
         evaluate_conditions(&id_str, &json, &mut store, &registry)
             .expect("the released coordinate must be reclaimable, re-invoking the evaluator");
 
-        let after_second = store.get_dossier_state(&id_str).unwrap().unwrap();
-        let after_second: SubmittedDossier = serde_json::from_str(&after_second).unwrap();
+        let after_second = conditions_of(&store, &id_str);
         assert!(
-            after_second.conditions[0].is_met,
+            after_second[0].resolved_by.is_some(),
             "the condition must be able to reach True on a later evaluate call, once its claim \
              was released instead of permanently settled"
         );
@@ -1296,15 +1339,16 @@ mod tests {
 
         let mut store = DossierStore::open(&path).unwrap();
         let registry = test_registry(&path);
-        let dossier = ready_for_decision_with_conditions(
-            id,
-            evaluator.to_str().unwrap(),
-            vec![condition.clone()],
-        );
+        let dossier = ready_for_decision(id, evaluator.to_str().unwrap());
         let json = serde_json::to_string(&dossier).unwrap();
         store.insert_dossier(&id_str, &json).unwrap();
         store
-            .commit_successor_revision(&id_str, None, &base_revision(), &[])
+            .commit_successor_revision(
+                &id_str,
+                None,
+                &base_revision_with_conditions(vec![condition.clone()]),
+                &[],
+            )
             .unwrap();
 
         // Two full evaluate_conditions calls, both returning False for the same unchanged
@@ -1314,9 +1358,8 @@ mod tests {
         evaluate_conditions(&id_str, &json, &mut store, &registry)
             .expect("a second retry under the same coordinate must not fail to record its event");
 
-        let state_json = store.get_dossier_state(&id_str).unwrap().unwrap();
-        let updated: SubmittedDossier = serde_json::from_str(&state_json).unwrap();
-        assert!(!updated.conditions[0].is_met);
+        let conditions = conditions_of(&store, &id_str);
+        assert!(conditions[0].resolved_by.is_none());
         let _ = std::fs::remove_file(&path);
     }
 
@@ -1363,15 +1406,16 @@ mod tests {
 
         let mut store = DossierStore::open(&path).unwrap();
         let registry = test_registry(&path);
-        let dossier = ready_for_decision_with_conditions(
-            id,
-            evaluator.to_str().unwrap(),
-            vec![condition.clone()],
-        );
+        let dossier = ready_for_decision(id, evaluator.to_str().unwrap());
         let json = serde_json::to_string(&dossier).unwrap();
         store.insert_dossier(&id_str, &json).unwrap();
         store
-            .commit_successor_revision(&id_str, None, &base_revision(), &[])
+            .commit_successor_revision(
+                &id_str,
+                None,
+                &base_revision_with_conditions(vec![condition.clone()]),
+                &[],
+            )
             .unwrap();
 
         let err = evaluate_conditions(&id_str, &json, &mut store, &registry).unwrap_err();
@@ -1392,10 +1436,9 @@ mod tests {
             .expect("a released coordinate must be claimable again, not stuck as fulfilled");
         registry.settle_fulfilled(retry_ticket).unwrap();
 
-        let state_json = store.get_dossier_state(&id_str).unwrap().unwrap();
-        let updated: SubmittedDossier = serde_json::from_str(&state_json).unwrap();
+        let conditions = conditions_of(&store, &id_str);
         assert!(
-            !updated.conditions[0].is_met,
+            conditions[0].resolved_by.is_none(),
             "a malformed evaluation must not mark the condition met"
         );
 
@@ -1420,15 +1463,16 @@ mod tests {
 
         let mut store = DossierStore::open(&path).unwrap();
         let registry = test_registry(&path);
-        let dossier = ready_for_decision_with_conditions(
-            id,
-            evaluator.to_str().unwrap(),
-            vec![one_condition()],
-        );
+        let dossier = ready_for_decision(id, evaluator.to_str().unwrap());
         let json = serde_json::to_string(&dossier).unwrap();
         store.insert_dossier(&id_str, &json).unwrap();
         store
-            .commit_successor_revision(&id_str, None, &base_revision(), &[])
+            .commit_successor_revision(
+                &id_str,
+                None,
+                &base_revision_with_conditions(vec![one_condition()]),
+                &[],
+            )
             .unwrap();
 
         evaluate_conditions(&id_str, &json, &mut store, &registry).unwrap();

@@ -7,8 +7,7 @@
 //! validated successor: it delegates the actual acceptance decision to `Revision::apply_moves`
 //! rather than re-deciding it here.
 
-use crate::dossier::Condition;
-use crate::revision::{Move, Revision};
+use crate::revision::{Condition, Move, Revision};
 
 /// Build the prompt for a respondent agent.
 /// It contains the original proposal, current public revision state (understanding, positions),
@@ -237,11 +236,15 @@ pub enum ConditionVerdict {
     Unknown,
 }
 
+/// The structured output a `ConditionEvaluator` invocation produces. No `provenance` field: a
+/// condition evaluator has no prior respondent claim to cite (unlike an arbitrator's
+/// `ResolveDissent`/`CloseRisk`/`AnswerQuestion`), so a satisfying resolution's provenance is
+/// always the sealed evaluation event itself, constructed by `evaluate_conditions` — never
+/// something the evaluator's own output could supply.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ConditionEvaluationOutput {
     pub verdict: ConditionVerdict,
     pub reason: String,
-    pub provenance: Vec<crate::revision::EventRef>,
 }
 
 /// Build the prompt for a condition-evaluator agent, judging exactly one condition.
@@ -262,7 +265,7 @@ pub fn build_condition_evaluator_prompt(condition: &Condition, revision: &Revisi
         "\n\nDecide whether this condition is currently satisfied. Respond with your reasoning, \
          then end your reply with exactly one line of compact JSON (no surrounding prose, no \
          pretty-printing) of the form: \
-         {\"verdict\": \"True\" | \"False\" | \"Unknown\", \"reason\": \"...\", \"provenance\": []}",
+         {\"verdict\": \"True\" | \"False\" | \"Unknown\", \"reason\": \"...\"}",
     );
     prompt
 }
@@ -286,16 +289,17 @@ mod tests {
             dissents: vec![],
             risks: vec![],
             questions: vec![],
+            conditions: vec![],
         };
         let first = Condition {
             id: Uuid::new_v4(),
             description: "Budget is under $1000".into(),
-            is_met: false,
+            resolved_by: None,
         };
         let second = Condition {
             id: Uuid::new_v4(),
             description: "Security review completed".into(),
-            is_met: false,
+            resolved_by: None,
         };
 
         let prompt = build_condition_evaluator_prompt(&first, &revision);
@@ -333,6 +337,7 @@ mod tests {
                 text: "Which supplier?".into(),
                 answered_by: None,
             }],
+            conditions: vec![],
         };
 
         let prompt = build_arbitrator_prompt(&revision, &[]);
@@ -356,6 +361,7 @@ mod tests {
             dissents: vec![],
             risks: vec![],
             questions: vec![],
+            conditions: vec![],
         };
         let event_id = Uuid::new_v4();
         let claim = RespondentClaim {
@@ -422,6 +428,7 @@ mod tests {
                     }),
                 },
             ],
+            conditions: vec![],
         };
 
         let prompt = build_respondent_prompt("What fuel to use?", &revision);
@@ -467,6 +474,7 @@ mod tests {
             }],
             risks: vec![],
             questions: vec![],
+            conditions: vec![],
         };
 
         // A move resolving the dissent, but with no event provenance.
@@ -510,6 +518,7 @@ mod tests {
                 resolved_by: None,
             }],
             questions: vec![],
+            conditions: vec![],
         };
 
         let output = ArbitrationOutput {
@@ -543,7 +552,6 @@ mod tests {
         let output = ConditionEvaluationOutput {
             verdict: ConditionVerdict::False,
             reason: "Sealed reason: API is down".into(),
-            provenance: vec![],
         };
 
         // This goes into a Sealed event
@@ -567,6 +575,7 @@ mod tests {
             dissents: vec![],
             risks: vec![],
             questions: vec![],
+            conditions: vec![],
         };
 
         let prompt = build_respondent_prompt("Question", &base);

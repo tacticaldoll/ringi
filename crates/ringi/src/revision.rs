@@ -1,16 +1,20 @@
 //! `Revision`: the current dossier revision as work SSOT (per `PROJECT.md`), with
-//! `Dissent`/`Risk`/`Question` as its addressable, provenance-bound residual items and `Digest`
-//! as its content identity.
+//! `Dissent`/`Risk`/`Question`/`Condition` as its addressable, provenance-bound residual items
+//! and `Digest` as its content identity.
 //!
-//! `apply_moves` is the one place a successor revision is produced: an arbitration turn declares
-//! zero or more `Move`s, each targeting exactly one residual item, and ringi applies them onto a
-//! clone of the current revision (via the `residual_ledger` seam, which composes `cadw_contract`)
-//! — never reading a whole successor object from the agent. A residual item with no move
+//! `apply_moves` is the one place a successor revision is produced from an arbitration turn: it
+//! declares zero or more `Move`s, each targeting exactly one dissent/risk/question, and ringi
+//! applies them onto a clone of the current revision (via the `residual_ledger` seam, which
+//! composes `cadw`) — never reading a whole successor object from the agent. `apply_condition_move`
+//! is the analogous entry point for conditions, taking a single `ConditionMove` instead of a
+//! batch: conditions are human-authored (`add_condition_command`) and evaluator-judged
+//! (`evaluate_conditions`), never arbitrator-authored, which is why `ConditionMove` is a separate
+//! enum from `Move` rather than a shared vocabulary. In both cases, a residual item with no move
 //! targeting it is carried forward unchanged; there is no way to silently drop it, because
-//! removal was never an operation a `Move` batch can express. A resolution/answer must carry a
+//! removal was never an operation either enum can express. A resolution/answer must carry a
 //! non-empty reason and event provenance — the conservative-retention invariant `BACKLOG.md`
-//! states as a settled decision. `apply_moves` also sets the successor's `parent_digest` and
-//! recomputes its own content-derived `content_digest`, so the chain of digests is only ever
+//! states as a settled decision. Both entry points set the successor's `parent_digest` and
+//! recompute its own content-derived `content_digest`, so the chain of digests is only ever
 //! produced here, never assembled by a caller.
 
 use serde::{Deserialize, Serialize};
@@ -59,6 +63,19 @@ pub struct Question {
     pub answered_by: Option<Resolution>,
 }
 
+/// A condition carried by a revision. Structurally identical to a dissent, risk, or question: a
+/// stable id, a description, and an optional provenance-bound resolution. Unlike the other three,
+/// a condition can only be added by a human (`add_condition_command`, while the dossier is
+/// `ReadyForDecision`) and can only be satisfied by an isolated `ConditionEvaluator` invocation
+/// (`evaluate_conditions`) — never by an arbitrator turn, which is exactly why its mutations go
+/// through the separate [`ConditionMove`] enum rather than [`Move`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Condition {
+    pub id: Uuid,
+    pub description: String,
+    pub resolved_by: Option<Resolution>,
+}
+
 /// A discrete, provenance-bound operation an arbitration turn declares on exactly one residual
 /// target. Ringi applies a batch of these to the current revision to produce the successor; the
 /// agent never supplies a whole successor `Revision`. `id` fields reference an existing residual
@@ -74,6 +91,17 @@ pub enum Move {
     AnswerQuestion { id: Uuid, resolution: Resolution },
 }
 
+/// A discrete, provenance-bound operation on exactly one condition — deliberately not a variant
+/// of [`Move`]. An arbitrator must never be able to author or satisfy a condition (conditions are
+/// human-authored, evaluator-judged only); keeping this a separate enum makes that a compile-time
+/// fact rather than a runtime check someone has to remember.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind")]
+pub enum ConditionMove {
+    Add { description: String },
+    Satisfy { id: Uuid, resolution: Resolution },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Revision {
     pub revision_id: Uuid,
@@ -87,6 +115,7 @@ pub struct Revision {
     pub dissents: Vec<Dissent>,
     pub risks: Vec<Risk>,
     pub questions: Vec<Question>,
+    pub conditions: Vec<Condition>,
 }
 
 impl Revision {
@@ -102,6 +131,7 @@ impl Revision {
             &self.dissents,
             &self.risks,
             &self.questions,
+            &self.conditions,
         ))
         .expect("Revision's SSOT fields are always serializable");
         let mut hasher = Sha256::new();
@@ -143,6 +173,24 @@ impl Revision {
         next.content_digest = next.compute_digest();
         Ok(next)
     }
+
+    /// Applies a single condition move to produce the successor revision. Structurally identical
+    /// to [`Revision::apply_moves`] (same seam, same digest handling), except: exactly one move,
+    /// never a batch (today's actual call sites — `add_condition_command`,
+    /// `evaluate_conditions` — never need more than one at a time), and `current_understanding`
+    /// is always carried forward unchanged (a `ConditionMove` never touches it, unlike an
+    /// arbitrator's `Move` batch).
+    pub fn apply_condition_move(&self, mv: ConditionMove) -> Result<Revision, &'static str> {
+        let conditions = crate::residual_ledger::apply_condition_move(&self.conditions, mv)?;
+
+        let mut next = self.clone();
+        next.revision_id = Uuid::new_v4();
+        next.conditions = conditions;
+
+        next.parent_digest = Some(self.content_digest.clone());
+        next.content_digest = next.compute_digest();
+        Ok(next)
+    }
 }
 
 #[cfg(test)]
@@ -164,6 +212,7 @@ mod tests {
             }],
             risks: vec![],
             questions: vec![],
+            conditions: vec![],
         }
     }
 
@@ -183,6 +232,7 @@ mod tests {
                 resolved_by: None,
             }],
             questions: vec![],
+            conditions: vec![],
         };
         (base, risk_id)
     }
@@ -203,6 +253,7 @@ mod tests {
                 text: "Which supplier?".into(),
                 answered_by: None,
             }],
+            conditions: vec![],
         };
         (base, question_id)
     }
@@ -471,6 +522,129 @@ mod tests {
         assert!(successor.questions[0].answered_by.is_none());
     }
 
+    fn base_with_unresolved_condition() -> (Revision, Uuid) {
+        let condition_id = Uuid::new_v4();
+        let mut base = create_base_revision();
+        base.conditions = vec![Condition {
+            id: condition_id,
+            description: "Security review completed".into(),
+            resolved_by: None,
+        }];
+        (base, condition_id)
+    }
+
+    #[test]
+    fn an_unresolved_condition_survives_an_untargeting_move() {
+        let (base, condition_id) = base_with_unresolved_condition();
+        let successor = base
+            .apply_condition_move(ConditionMove::Add {
+                description: "A different condition".into(),
+            })
+            .expect("valid add-condition applies");
+        let original = successor
+            .conditions
+            .iter()
+            .find(|c| c.id == condition_id)
+            .expect("the original condition is carried forward");
+        assert!(original.resolved_by.is_none());
+    }
+
+    #[test]
+    fn satisfying_a_condition_without_provenance_is_rejected() {
+        let (base, condition_id) = base_with_unresolved_condition();
+        let err = base
+            .apply_condition_move(ConditionMove::Satisfy {
+                id: condition_id,
+                resolution: Resolution {
+                    reason: "Reviewed".into(),
+                    provenance: vec![],
+                },
+            })
+            .unwrap_err();
+        assert_eq!(err, "Condition satisfaction requires event provenance");
+    }
+
+    #[test]
+    fn satisfying_a_condition_with_provenance_succeeds() {
+        let (base, condition_id) = base_with_unresolved_condition();
+        let successor = base
+            .apply_condition_move(ConditionMove::Satisfy {
+                id: condition_id,
+                resolution: Resolution {
+                    reason: "Reviewed".into(),
+                    provenance: provenance(),
+                },
+            })
+            .expect("valid satisfy applies");
+        assert!(successor.conditions[0].resolved_by.is_some());
+    }
+
+    #[test]
+    fn satisfying_an_already_satisfied_condition_is_rejected() {
+        let (base, condition_id) = base_with_unresolved_condition();
+        let once_satisfied = base
+            .apply_condition_move(ConditionMove::Satisfy {
+                id: condition_id,
+                resolution: Resolution {
+                    reason: "Reviewed".into(),
+                    provenance: provenance(),
+                },
+            })
+            .expect("first satisfy applies");
+        let err = once_satisfied
+            .apply_condition_move(ConditionMove::Satisfy {
+                id: condition_id,
+                resolution: Resolution {
+                    reason: "Reviewed again".into(),
+                    provenance: provenance(),
+                },
+            })
+            .unwrap_err();
+        assert_eq!(err, "Cannot satisfy a condition that is already satisfied");
+    }
+
+    #[test]
+    fn satisfying_a_nonexistent_condition_is_rejected() {
+        let base = create_base_revision();
+        let err = base
+            .apply_condition_move(ConditionMove::Satisfy {
+                id: Uuid::new_v4(),
+                resolution: Resolution {
+                    reason: "Reviewed".into(),
+                    provenance: provenance(),
+                },
+            })
+            .unwrap_err();
+        assert_eq!(err, "Move targets a condition that does not exist");
+    }
+
+    #[test]
+    fn adding_a_condition_with_empty_description_is_rejected() {
+        let base = create_base_revision();
+        let err = base
+            .apply_condition_move(ConditionMove::Add {
+                description: String::new(),
+            })
+            .unwrap_err();
+        assert_eq!(err, "A new condition requires a non-empty description");
+    }
+
+    #[test]
+    fn adding_a_condition_appends_a_new_open_condition() {
+        let base = create_base_revision();
+        let successor = base
+            .apply_condition_move(ConditionMove::Add {
+                description: "Security review completed".into(),
+            })
+            .expect("valid add-condition applies");
+        assert_eq!(successor.conditions.len(), 1);
+        assert_eq!(
+            successor.conditions[0].description,
+            "Security review completed"
+        );
+        assert!(successor.conditions[0].resolved_by.is_none());
+    }
+
     #[test]
     fn a_batch_targeting_the_same_item_twice_is_rejected() {
         let base = create_base_revision();
@@ -570,6 +744,19 @@ mod tests {
         let a = create_base_revision();
         let mut b = a.clone();
         b.current_understanding = "Building Y instead".into();
+
+        assert_ne!(a.compute_digest(), b.compute_digest());
+    }
+
+    #[test]
+    fn a_condition_change_produces_a_different_digest() {
+        let a = create_base_revision();
+        let mut b = a.clone();
+        b.conditions = vec![Condition {
+            id: Uuid::new_v4(),
+            description: "Security review completed".into(),
+            resolved_by: None,
+        }];
 
         assert_ne!(a.compute_digest(), b.compute_digest());
     }

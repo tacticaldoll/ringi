@@ -150,26 +150,19 @@ impl Frontmatter {
                 limits: self.limits,
                 roles: self.roles,
             },
-            conditions: vec![],
         })
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Condition {
-    pub id: Uuid,
-    pub description: String,
-    pub is_met: bool,
-}
-
-/// A dossier that has been submitted and its settings are locked.
+/// A dossier that has been submitted and its settings are locked. Conditions are no longer a
+/// dossier-level field — they live on the latest `Revision` (`revision::Condition`), mutated
+/// through `revision::ConditionMove` via the same `residual_ledger` seam as dissents/risks/
+/// questions.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SubmittedDossier {
     pub id: Uuid,
     pub state: LifecycleState,
     pub locked_settings: LockedSettings,
-    #[serde(default)]
-    pub conditions: Vec<Condition>,
 }
 
 impl SubmittedDossier {
@@ -268,7 +261,6 @@ mod tests {
                 limits: Limits::default(),
                 roles: RoleBindings::default(),
             },
-            conditions: vec![],
         }
     }
 

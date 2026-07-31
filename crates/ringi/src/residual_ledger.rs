@@ -1,20 +1,24 @@
 //! The residual-ledger seam: ringi's one place that speaks cadw.
 //!
-//! Ringi composes `cadw`'s `Ledger` to validate and atomically apply a `Move` batch's
-//! structural rules — existence, state-machine, duplicate-target rejection — the same shape
-//! `Revision::apply_moves` needs for its dissents/risks/questions. `cadw`'s `Ledger` is
-//! reconstructed fresh from the revision's own already-persisted state on every call, used, and
-//! discarded: `cadw` owns no persistence of its own by design, so ringi's own
-//! `Dissent`/`Risk`/`Question` vectors remain the sole durable source of truth. Per
-//! `docs/naming.md`'s seam rule, `cadw`'s vocabulary (`TargetId`, `Ledger`, `Move`,
-//! `Validator`, `Rejection`) is confined to this module and never names a ringi domain type.
+//! Ringi composes `cadw`'s `Ledger` to validate and atomically apply a `Move`
+//! batch's/`ConditionMove`'s structural rules — existence, state-machine, duplicate-target
+//! rejection — the same shape `Revision::apply_moves`/`apply_condition_move` need for their
+//! dissents/risks/questions/conditions. `cadw`'s `Ledger` is reconstructed fresh from the
+//! revision's own already-persisted state on every call, used, and discarded: `cadw` owns no
+//! persistence of its own by design, so ringi's own `Dissent`/`Risk`/`Question`/`Condition`
+//! vectors remain the sole durable source of truth. `apply` and `apply_condition_move` each build
+//! their own `Ledger`, scoped to their own target namespace (`dissent:`/`risk:`/`question:` vs
+//! `condition:`) — the two never interact, since a `Move` batch never references a condition and
+//! a `ConditionMove` never references the other three. Per `docs/naming.md`'s seam rule, `cadw`'s
+//! vocabulary (`TargetId`, `Ledger`, `Move`, `Validator`, `Rejection`) is confined to this module
+//! and never names a ringi domain type.
 
 use std::fmt;
 
 use cadw::{Ledger, Move as CadwMove, Rejection as CadwRejection, State, TargetId, Validator};
 use uuid::Uuid;
 
-use crate::revision::{Dissent, Move, Question, Resolution, Risk};
+use crate::revision::{Condition, ConditionMove, Dissent, Move, Question, Resolution, Risk};
 
 fn dissent_target(id: Uuid) -> TargetId {
     TargetId::new(format!("dissent:{id}"))
@@ -28,6 +32,10 @@ fn question_target(id: Uuid) -> TargetId {
     TargetId::new(format!("question:{id}"))
 }
 
+fn condition_target(id: Uuid) -> TargetId {
+    TargetId::new(format!("condition:{id}"))
+}
+
 /// Which residual category a `TargetId` names, recovered from its own prefix — the same
 /// prefixing `convergence.rs` already uses for suunta's `Sigil`.
 #[derive(Clone, Copy)]
@@ -35,6 +43,7 @@ enum Kind {
     Dissent,
     Risk,
     Question,
+    Condition,
 }
 
 fn kind_of(target: &TargetId) -> Kind {
@@ -43,8 +52,10 @@ fn kind_of(target: &TargetId) -> Kind {
         Kind::Dissent
     } else if rendered.starts_with("risk:") {
         Kind::Risk
-    } else {
+    } else if rendered.starts_with("question:") {
         Kind::Question
+    } else {
+        Kind::Condition
     }
 }
 
@@ -123,17 +134,20 @@ fn translate_rejection(rejection: CadwRejection<ResolutionRejection>) -> &'stati
             Kind::Dissent => "Move targets a dissent that does not exist",
             Kind::Risk => "Move targets a risk that does not exist",
             Kind::Question => "Move targets a question that does not exist",
+            Kind::Condition => "Move targets a condition that does not exist",
         },
         CadwRejection::AlreadyClosed(target) => match kind_of(&target) {
             Kind::Dissent => "Cannot resolve a dissent that is already resolved",
             Kind::Risk => "Cannot close a risk that is already closed",
             Kind::Question => "Cannot answer a question that is already answered",
+            Kind::Condition => "Cannot satisfy a condition that is already satisfied",
         },
         CadwRejection::Invalid(target, ResolutionRejection::EmptyReason) => {
             match kind_of(&target) {
                 Kind::Dissent => "Dissent resolution requires a reason",
                 Kind::Risk => "Risk resolution requires a reason",
                 Kind::Question => "Question answer requires a reason",
+                Kind::Condition => "Condition satisfaction requires a reason",
             }
         }
         CadwRejection::Invalid(target, ResolutionRejection::EmptyProvenance) => {
@@ -141,6 +155,7 @@ fn translate_rejection(rejection: CadwRejection<ResolutionRejection>) -> &'stati
                 Kind::Dissent => "Dissent resolution requires event provenance",
                 Kind::Risk => "Risk resolution requires event provenance",
                 Kind::Question => "Question answer requires event provenance",
+                Kind::Condition => "Condition satisfaction requires event provenance",
             }
         }
         CadwRejection::AlreadyExists(_) | CadwRejection::NotClosed(_) => {
@@ -287,4 +302,71 @@ pub fn apply(
     }
 
     Ok((next_dissents, next_risks, next_questions))
+}
+
+/// Applies a single `ConditionMove` to the given conditions by composing cadw's `Ledger`, exactly
+/// as `apply` does for a `Move` batch — a separate, smaller `Ledger` scoped to conditions alone
+/// (the `condition:` target namespace never overlaps with `dissent:`/`risk:`/`question:`, so
+/// there is no cross-category interaction a shared `Ledger` construction would need to protect
+/// against). Only one move at a time: neither of today's call sites (`add_condition_command`,
+/// `evaluate_conditions`) ever need more than one.
+pub fn apply_condition_move(
+    conditions: &[Condition],
+    mv: ConditionMove,
+) -> Result<Vec<Condition>, &'static str> {
+    if let ConditionMove::Add { description } = &mv
+        && description.is_empty()
+    {
+        return Err("A new condition requires a non-empty description");
+    }
+
+    let baseline = Ledger::new(conditions.iter().map(|c| condition_target(c.id)));
+
+    let replay: Vec<CadwMove<Resolution>> = conditions
+        .iter()
+        .filter_map(|c| {
+            c.resolved_by.clone().map(|r| CadwMove::Close {
+                target: condition_target(c.id),
+                outcome: r,
+            })
+        })
+        .collect();
+    let current = baseline
+        .fold_batch(&replay, &AlwaysValid)
+        .expect("replaying already-persisted, already-validated history cannot fail");
+
+    let mut new_condition: Option<(Uuid, String)> = None;
+    let cadw_move = match mv {
+        ConditionMove::Add { description } => {
+            let id = Uuid::new_v4();
+            new_condition = Some((id, description));
+            CadwMove::Create {
+                target: condition_target(id),
+            }
+        }
+        ConditionMove::Satisfy { id, resolution } => CadwMove::Close {
+            target: condition_target(id),
+            outcome: resolution,
+        },
+    };
+
+    let next = current
+        .fold_batch(&[cadw_move], &ResolutionValidator)
+        .map_err(translate_rejection)?;
+
+    let mut next_conditions = conditions.to_vec();
+    for condition in &mut next_conditions {
+        if let Some(State::Closed(resolution)) = next.state_of(&condition_target(condition.id)) {
+            condition.resolved_by = Some(resolution.clone());
+        }
+    }
+    if let Some((id, description)) = new_condition {
+        next_conditions.push(Condition {
+            id,
+            description,
+            resolved_by: None,
+        });
+    }
+
+    Ok(next_conditions)
 }

@@ -142,6 +142,7 @@ mod tests {
             dissents,
             risks,
             questions,
+            conditions: vec![],
         }
     }
 
