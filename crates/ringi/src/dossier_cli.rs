@@ -224,11 +224,16 @@ mod tests {
         path
     }
 
-    // Mutates the process's current directory for the duration of the test (submit_command
-    // reads/writes dossier files relative to CWD). Safe today because no other test in this
-    // crate depends on a relative path; a future one that does would race with it.
+    /// The process's current directory is global state. Any test that mutates it (because
+    /// `submit_command`/`transition_command` resolve dossier files relative to CWD) MUST hold
+    /// this lock for the duration, or it races with every other such test in this module.
+    static CWD_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    // Mutates the process's current directory for the duration of the test; see `CWD_LOCK`.
     #[test]
     fn test_submit_computes_a_real_content_digest() {
+        let _guard = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
         let dir = std::env::temp_dir().join(format!("ringi-submit-cli-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -256,8 +261,11 @@ mod tests {
         assert_eq!(revision.content_digest, revision.compute_digest());
     }
 
+    // Mutates the process's current directory for the duration of the test; see `CWD_LOCK`.
     #[test]
     fn a_dossier_reaches_approved_once_evaluate_satisfies_its_only_condition() {
+        let _guard = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
         let dir = std::env::temp_dir().join(format!("ringi-approve-cli-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
