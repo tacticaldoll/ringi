@@ -83,6 +83,14 @@ than relabelling them.
   unknown is never convergence.
 - **Dissent:** unresolved dissent remains unless resolution includes a reason and source events;
   it can reopen on later evidence.
+- **Dissents gained create/resolve symmetry with risks/questions (2026-07-29,
+  `add-dissent-authorship`):** found via autonomous dogfooding — `Dissent` had `Move::ResolveDissent`
+  but no creation path anywhere (no `Move::AddDissent`, no CLI command), unlike `Risk`/`Question`,
+  which both pair an `Add*`/`Ask*` variant with their resolve/answer variant. Every `Dissent`
+  before this fix existed only inside test fixtures, never through any code path a running
+  dossier could actually reach. Added `Move::AddDissent { claim: String }`, arbitrator-authored
+  (mirroring `AddRisk`/`AskQuestion` exactly) — the option chosen over a human-authored CLI command
+  (like conditions) or leaving it as a documented gap.
 - **Arbitration policy:** users choose Economy, Balanced, or Assurance and may inspect advanced
   fixed settings. Submission locks the resolved policy, limits, and role bindings.
 - **Session topology:** persistent arbitration is a cost optimization, never hidden truth. Fresh

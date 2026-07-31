@@ -157,8 +157,8 @@ pub fn build_arbitrator_prompt(revision: &Revision, recent_claims: &[RespondentC
 
     prompt.push_str(
         "\nPlease provide an updated narrative understanding, and declare zero or more moves on \
-         the residual: resolve a dissent, add or close a risk, ask a question, or answer a \
-         question. Do not restate items you are not acting on — silence leaves them exactly as \
+         the residual: add or resolve a dissent, add or close a risk, ask a question, or answer \
+         a question. Do not restate items you are not acting on — silence leaves them exactly as \
          they are.",
     );
     // The transport (`agent::parse_metadata`) scans stdout lines in reverse for a single line
@@ -169,7 +169,7 @@ pub fn build_arbitrator_prompt(revision: &Revision, recent_claims: &[RespondentC
          no pretty-printing) of the form: {\"current_understanding\": \"...\", \"moves\": \
          [{\"kind\": \"ResolveDissent\", \"id\": \"...\", \"resolution\": {\"reason\": \"...\", \
          \"provenance\": [{\"event_id\": \"...\"}]}}, ...]} — each move's \"kind\" is one of \
-         ResolveDissent, AddRisk, CloseRisk, AskQuestion, AnswerQuestion.",
+         AddDissent, ResolveDissent, AddRisk, CloseRisk, AskQuestion, AnswerQuestion.",
     );
     prompt
 }

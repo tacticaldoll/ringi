@@ -12,17 +12,29 @@ absence of a move for an item is a no-op, never inferred as removing or changing
 ### Requirement: A Move is a discrete, provenance-bound operation on one residual target
 
 An arbitration turn SHALL declare zero or more `Move`s instead of authoring an entire successor
-`Revision`. Each `Move` SHALL target exactly one residual item (a dissent, a risk, or a question) by
-its stable identifier and SHALL carry whatever provenance that move's kind requires (a `Resolution`
-for resolving a dissent, closing a risk, or answering a question; a description for adding a risk;
-text for asking a question). Ringi applies each declared `Move` to the current revision to produce
-the successor; the agent never supplies a whole successor `Revision`.
+`Revision`. Each `Move` SHALL target exactly one residual item (a dissent, a risk, or a question)
+by its stable identifier and SHALL carry whatever provenance that move's kind requires (a
+`Resolution` for resolving a dissent, closing a risk, or answering a question; a claim for adding
+a dissent; a description for adding a risk; text for asking a question). Ringi applies each
+declared `Move` to the current revision to produce the successor; the agent never supplies a
+whole successor `Revision`.
 
 #### Scenario: A move resolves a dissent
 
 - **WHEN** an arbitration turn declares a move resolving an open dissent, with a non-empty reason
   and non-empty event provenance
 - **THEN** that dissent's resolution is applied to the successor revision
+
+#### Scenario: A move adds a new dissent
+
+- **WHEN** an arbitration turn declares a move adding a dissent with a non-empty claim
+- **THEN** a new, unresolved dissent with that claim is appended to the successor revision, with a
+  stable id ringi mints
+
+#### Scenario: A move adding a dissent with an empty claim is rejected
+
+- **WHEN** an arbitration turn declares a move adding a dissent with an empty claim
+- **THEN** the move is rejected
 
 #### Scenario: A move is rejected without required provenance
 

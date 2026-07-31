@@ -79,11 +79,12 @@ pub struct Condition {
 /// A discrete, provenance-bound operation an arbitration turn declares on exactly one residual
 /// target. Ringi applies a batch of these to the current revision to produce the successor; the
 /// agent never supplies a whole successor `Revision`. `id` fields reference an existing residual
-/// item (a dissent, risk, or question already on the revision); `AddRisk`/`AskQuestion` create a
-/// new one instead of targeting an existing id.
+/// item (a dissent, risk, or question already on the revision); `AddDissent`/`AddRisk`/
+/// `AskQuestion` create a new one instead of targeting an existing id.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind")]
 pub enum Move {
+    AddDissent { claim: String },
     ResolveDissent { id: Uuid, resolution: Resolution },
     AddRisk { description: String },
     CloseRisk { id: Uuid, resolution: Resolution },
@@ -368,6 +369,42 @@ mod tests {
             )
             .unwrap_err();
         assert_eq!(err, "Cannot resolve a dissent that is already resolved");
+    }
+
+    #[test]
+    fn adding_a_dissent_with_empty_claim_is_rejected() {
+        let base = create_base_revision();
+        let err = base
+            .apply_moves(
+                "unchanged".into(),
+                vec![Move::AddDissent {
+                    claim: String::new(),
+                }],
+            )
+            .unwrap_err();
+        assert_eq!(err, "A new dissent requires a non-empty claim");
+    }
+
+    #[test]
+    fn adding_a_dissent_appends_a_new_open_dissent() {
+        let base = create_base_revision();
+        let successor = base
+            .apply_moves(
+                "unchanged".into(),
+                vec![Move::AddDissent {
+                    claim: "Newly raised disagreement".into(),
+                }],
+            )
+            .expect("valid add-dissent applies");
+        // The base revision already has one dissent (see create_base_revision); the new one is
+        // appended alongside it, not in place of it.
+        assert_eq!(successor.dissents.len(), 2);
+        let added = successor
+            .dissents
+            .iter()
+            .find(|d| d.claim == "Newly raised disagreement")
+            .expect("the new dissent is present");
+        assert!(added.resolved_by.is_none());
     }
 
     #[test]
