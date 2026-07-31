@@ -13,6 +13,7 @@ pub mod dossier_cli;
 pub mod event;
 pub mod exec;
 pub mod registry;
+pub mod residual_ledger;
 pub mod revision;
 pub mod store;
 
