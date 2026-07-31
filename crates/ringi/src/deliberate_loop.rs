@@ -25,19 +25,38 @@ use crate::event::{Event, EventPayload, InvocationCoordinate};
 use crate::registry::SqliteRegistry;
 use crate::store::DossierStore;
 
-/// Claims `coordinate` through `registry`, runs `invoke`, and settles the claim — fulfilled only
-/// if `invoke` returns `Ok` (a usable result — the caller decides what "usable" means: an
-/// exit-code check, and for the arbitrator/condition-evaluator, a parsed structured output),
-/// released for an immediate retry under the same coordinate on any `Err`. A claim never settles
-/// fulfilled on a bare zero exit code alone — a caller whose success also requires parsing
-/// structured output must do that parse *inside* `invoke`, or a malformed response would settle
-/// fulfilled (permanently, since fulfilled is terminal) despite ringi never getting a usable
-/// result. Centralizes the claim-before-invoke/settle-after checkpoint so the three invocation
-/// sites (respondent, arbitrator, condition-evaluator) do not each repeat it.
+/// What a claimed unit of work decided about its own outcome, distinct from whether it executed
+/// without error. Some successful results are still not "final" in the sense that matters to the
+/// claim itself — e.g. a condition evaluator's negative verdict is a fully successful invocation
+/// that is nonetheless not a permanent fact about the condition.
+enum Settlement<T> {
+    /// The result is final: the claim never needs to be retried under this coordinate.
+    Fulfilled(T),
+    /// The result is valid and usable now, but not final: the same coordinate should remain
+    /// claimable (e.g. a negative/uncertain verdict whose underlying circumstance might change).
+    Retryable(T),
+}
+
+impl<T> Settlement<T> {
+    fn into_inner(self) -> T {
+        match self {
+            Settlement::Fulfilled(t) | Settlement::Retryable(t) => t,
+        }
+    }
+}
+
+/// Claims `coordinate` through `registry`, runs `invoke`, and settles the claim according to
+/// `invoke`'s own `Settlement` — fulfilled only on `Ok(Settlement::Fulfilled(_))`, released for an
+/// immediate retry under the same coordinate on `Ok(Settlement::Retryable(_))` or any `Err`. A
+/// claim never settles fulfilled on a bare zero exit code alone — a caller whose success also
+/// requires parsing structured output must do that parse *inside* `invoke`, or a malformed
+/// response would settle fulfilled (permanently, since fulfilled is terminal) despite ringi never
+/// getting a usable result. Centralizes the claim-before-invoke/settle-after checkpoint so the
+/// three invocation sites (respondent, arbitrator, condition-evaluator) do not each repeat it.
 fn claimed_invoke<T>(
     registry: &SqliteRegistry,
     coordinate: &InvocationCoordinate,
-    invoke: impl FnOnce() -> anyhow::Result<T>,
+    invoke: impl FnOnce() -> anyhow::Result<Settlement<T>>,
 ) -> anyhow::Result<T> {
     let ticket = registry.claim_invocation(coordinate)?.with_context(|| {
         format!(
@@ -48,10 +67,11 @@ fn claimed_invoke<T>(
 
     let outcome = invoke();
     match &outcome {
-        Ok(_) => registry.settle_fulfilled(ticket)?,
+        Ok(Settlement::Fulfilled(_)) => registry.settle_fulfilled(ticket)?,
+        Ok(Settlement::Retryable(_)) => registry.release_for_retry(ticket)?,
         Err(_) => registry.release_for_retry(ticket)?,
     }
-    outcome
+    outcome.map(Settlement::into_inner)
 }
 
 pub fn run_deliberation(
@@ -150,12 +170,12 @@ pub fn run_deliberation(
                 let claim = claimed_invoke(
                     registry,
                     &respondent_coordinate,
-                    || -> anyhow::Result<String> {
+                    || -> anyhow::Result<Settlement<String>> {
                         let res = respondent.run(req)?;
                         if res.exit_code != Some(0) {
                             bail!("Respondent failed: {}", res.stderr);
                         }
-                        Ok(res.stdout.trim().to_string())
+                        Ok(Settlement::Fulfilled(res.stdout.trim().to_string()))
                     },
                 )?;
                 println!("Turn {}: Respondent answered with claim: {}", turn, claim);
@@ -201,7 +221,7 @@ pub fn run_deliberation(
         let (mut successor, _next_questions) = claimed_invoke(
             registry,
             &arbitrator_coordinate,
-            || -> anyhow::Result<(crate::revision::Revision, Vec<String>)> {
+            || -> anyhow::Result<Settlement<(crate::revision::Revision, Vec<String>)>> {
                 let res = arbitrator.run(arb_agent_req)?;
                 if res.exit_code != Some(0) {
                     bail!("Arbitrator failed: {}", res.stderr);
@@ -211,7 +231,9 @@ pub fn run_deliberation(
                     .context("Arbitrator produced no structured output")?;
                 let output: ArbitrationOutput = serde_json::from_value(metadata)?;
                 println!("Turn {}: Applying arbitration...", turn);
-                apply_arbitration(&current_revision, output).map_err(|e| anyhow::anyhow!(e))
+                let applied =
+                    apply_arbitration(&current_revision, output).map_err(|e| anyhow::anyhow!(e))?;
+                Ok(Settlement::Fulfilled(applied))
             },
         )?;
 
@@ -310,7 +332,7 @@ pub fn evaluate_conditions(
         let output = claimed_invoke(
             registry,
             &coordinate,
-            || -> anyhow::Result<ConditionEvaluationOutput> {
+            || -> anyhow::Result<Settlement<ConditionEvaluationOutput>> {
                 let res = evaluator.run(req)?;
                 if res.exit_code != Some(0) {
                     bail!(
@@ -322,7 +344,12 @@ pub fn evaluate_conditions(
                 let metadata = res
                     .metadata
                     .context("Condition evaluator produced no structured output")?;
-                Ok(serde_json::from_value(metadata)?)
+                let output: ConditionEvaluationOutput = serde_json::from_value(metadata)?;
+                if output.verdict == ConditionVerdict::True {
+                    Ok(Settlement::Fulfilled(output))
+                } else {
+                    Ok(Settlement::Retryable(output))
+                }
             },
         )?;
 
@@ -333,9 +360,15 @@ pub fn evaluate_conditions(
             },
             index as u64,
         );
-        evaluation_event.coordinate = Some(coordinate);
 
+        // Only a True verdict's event carries its coordinate: that settlement is terminal, so
+        // recording it under this idempotency key exactly once is correct. A False/Unknown
+        // verdict's coordinate stays unset here — the coordinate itself remains claimable (see
+        // `claimed_invoke`'s `Settlement::Retryable`), and a later retry under that same
+        // coordinate must be able to record its own event without colliding with this one on
+        // `idempotency_key` (events, unlike pacts, have no notion of "retry" of their own).
         if output.verdict == ConditionVerdict::True {
+            evaluation_event.coordinate = Some(coordinate);
             dossier.conditions[index].is_met = true;
         }
 
@@ -997,6 +1030,288 @@ mod tests {
             .unwrap();
 
         evaluate_conditions(&id_str, &json, &mut store, &registry).unwrap();
+
+        let state_json = store.get_dossier_state(&id_str).unwrap().unwrap();
+        let updated: SubmittedDossier = serde_json::from_str(&state_json).unwrap();
+        assert!(!updated.conditions[0].is_met);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_false_verdict_releases_the_claim_for_retry() {
+        let _guard = crate::PROCESS_CWD_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!(
+            "ringi-eval-false-retry-{}.sqlite",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+
+        let id = Uuid::new_v4();
+        let id_str = id.to_string();
+        let condition = one_condition();
+        let evaluator = fake_agent(
+            "eval-false-retry.sh",
+            "echo '{\"verdict\":\"False\",\"reason\":\"over budget\",\"provenance\":[]}'",
+        );
+
+        let mut store = DossierStore::open(&path).unwrap();
+        let registry = test_registry(&path);
+        let dossier = ready_for_decision_with_conditions(
+            id,
+            evaluator.to_str().unwrap(),
+            vec![condition.clone()],
+        );
+        let json = serde_json::to_string(&dossier).unwrap();
+        store.insert_dossier(&id_str, &json).unwrap();
+        store
+            .commit_successor_revision(&id_str, None, &base_revision(), &[])
+            .unwrap();
+
+        evaluate_conditions(&id_str, &json, &mut store, &registry).unwrap();
+
+        // A False verdict is a fully successful invocation, but not final: the same coordinate
+        // must remain claimable — the exact bug found while dogfooding reopen -> evaluate.
+        let coordinate = InvocationCoordinate {
+            dossier_id: id,
+            role: format!("condition_evaluator:{}", condition.id),
+            input_digest: base_revision().content_digest.clone(),
+            turn: 0,
+            attempt: 1,
+        };
+        let retry_ticket = registry
+            .claim_invocation(&coordinate)
+            .unwrap()
+            .expect("a False verdict must release the claim for retry, not settle it fulfilled");
+        registry.settle_fulfilled(retry_ticket).unwrap();
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn an_unknown_verdict_releases_the_claim_for_retry() {
+        let _guard = crate::PROCESS_CWD_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!(
+            "ringi-eval-unknown-retry-{}.sqlite",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+
+        let id = Uuid::new_v4();
+        let id_str = id.to_string();
+        let condition = one_condition();
+        let evaluator = fake_agent(
+            "eval-unknown-retry.sh",
+            "echo '{\"verdict\":\"Unknown\",\"reason\":\"cannot tell\",\"provenance\":[]}'",
+        );
+
+        let mut store = DossierStore::open(&path).unwrap();
+        let registry = test_registry(&path);
+        let dossier = ready_for_decision_with_conditions(
+            id,
+            evaluator.to_str().unwrap(),
+            vec![condition.clone()],
+        );
+        let json = serde_json::to_string(&dossier).unwrap();
+        store.insert_dossier(&id_str, &json).unwrap();
+        store
+            .commit_successor_revision(&id_str, None, &base_revision(), &[])
+            .unwrap();
+
+        evaluate_conditions(&id_str, &json, &mut store, &registry).unwrap();
+
+        let coordinate = InvocationCoordinate {
+            dossier_id: id,
+            role: format!("condition_evaluator:{}", condition.id),
+            input_digest: base_revision().content_digest.clone(),
+            turn: 0,
+            attempt: 1,
+        };
+        let retry_ticket = registry
+            .claim_invocation(&coordinate)
+            .unwrap()
+            .expect("an Unknown verdict must release the claim for retry, not settle it fulfilled");
+        registry.settle_fulfilled(retry_ticket).unwrap();
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_prior_negative_verdict_does_not_block_a_later_evaluate_call_from_reaching_a_subsequent_condition()
+     {
+        let _guard = crate::PROCESS_CWD_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!(
+            "ringi-eval-subsequent-{}.sqlite",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+
+        let id = Uuid::new_v4();
+        let id_str = id.to_string();
+        let first = Condition {
+            id: Uuid::new_v4(),
+            description: "Load test passed".into(),
+            is_met: false,
+        };
+        let second = Condition {
+            id: Uuid::new_v4(),
+            description: "Legal sign-off received".into(),
+            is_met: false,
+        };
+        // Reads the prompt on stdin and answers based on which condition it is judging, so a
+        // single evaluator program can distinguish two conditions in one dossier.
+        let evaluator = fake_agent(
+            "eval-subsequent.sh",
+            "input=$(cat)\n\
+             if echo \"$input\" | grep -q 'Load test passed'; then\n\
+               echo '{\"verdict\":\"False\",\"reason\":\"still failing\",\"provenance\":[]}'\n\
+             else\n\
+               echo '{\"verdict\":\"True\",\"reason\":\"signed off\",\"provenance\":[]}'\n\
+             fi",
+        );
+
+        let mut store = DossierStore::open(&path).unwrap();
+        let registry = test_registry(&path);
+        let dossier = ready_for_decision_with_conditions(
+            id,
+            evaluator.to_str().unwrap(),
+            vec![first, second.clone()],
+        );
+        let json = serde_json::to_string(&dossier).unwrap();
+        store.insert_dossier(&id_str, &json).unwrap();
+        store
+            .commit_successor_revision(&id_str, None, &base_revision(), &[])
+            .unwrap();
+
+        evaluate_conditions(&id_str, &json, &mut store, &registry).unwrap();
+
+        // Even though the first condition's verdict was negative, the loop must still reach and
+        // evaluate the second, still-unattempted condition in the same call.
+        let state_json = store.get_dossier_state(&id_str).unwrap().unwrap();
+        let updated: SubmittedDossier = serde_json::from_str(&state_json).unwrap();
+        assert!(!updated.conditions[0].is_met);
+        assert!(
+            updated.conditions[1].is_met,
+            "a negative verdict on an earlier condition must not prevent the later condition \
+             from being reached and evaluated"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_released_condition_can_be_reevaluated_to_true_on_a_later_call() {
+        let _guard = crate::PROCESS_CWD_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!(
+            "ringi-eval-reevaluate-{}.sqlite",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let fix_flag_path = dir.join(format!("ringi-eval-reevaluate-fix-{}", std::process::id()));
+        let _ = std::fs::remove_file(&fix_flag_path);
+
+        let id = Uuid::new_v4();
+        let id_str = id.to_string();
+        let condition = one_condition();
+        // Answers False until fix_flag_path exists, then True — modeling "reopen, fix the
+        // underlying circumstance, evaluate again" without a real reopen transition.
+        let evaluator = fake_agent(
+            "eval-toggle.sh",
+            &format!(
+                "if [ -f '{}' ]; then \
+                   echo '{{\"verdict\":\"True\",\"reason\":\"now under budget\",\"provenance\":[]}}'; \
+                 else \
+                   echo '{{\"verdict\":\"False\",\"reason\":\"over budget\",\"provenance\":[]}}'; \
+                 fi",
+                fix_flag_path.display()
+            ),
+        );
+
+        let mut store = DossierStore::open(&path).unwrap();
+        let registry = test_registry(&path);
+        let dossier = ready_for_decision_with_conditions(
+            id,
+            evaluator.to_str().unwrap(),
+            vec![condition.clone()],
+        );
+        let json = serde_json::to_string(&dossier).unwrap();
+        store.insert_dossier(&id_str, &json).unwrap();
+        store
+            .commit_successor_revision(&id_str, None, &base_revision(), &[])
+            .unwrap();
+
+        evaluate_conditions(&id_str, &json, &mut store, &registry).unwrap();
+        let after_first = store.get_dossier_state(&id_str).unwrap().unwrap();
+        let after_first: SubmittedDossier = serde_json::from_str(&after_first).unwrap();
+        assert!(!after_first.conditions[0].is_met);
+
+        std::fs::write(&fix_flag_path, "").unwrap();
+        // Re-read the (unchanged) dossier JSON, matching how a CLI would re-invoke evaluate on
+        // the same still-ReadyForDecision dossier after the underlying circumstance changes.
+        evaluate_conditions(&id_str, &json, &mut store, &registry)
+            .expect("the released coordinate must be reclaimable, re-invoking the evaluator");
+
+        let after_second = store.get_dossier_state(&id_str).unwrap().unwrap();
+        let after_second: SubmittedDossier = serde_json::from_str(&after_second).unwrap();
+        assert!(
+            after_second.conditions[0].is_met,
+            "the condition must be able to reach True on a later evaluate call, once its claim \
+             was released instead of permanently settled"
+        );
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&fix_flag_path);
+    }
+
+    #[test]
+    fn two_consecutive_negative_verdicts_do_not_collide_on_idempotency_key() {
+        let _guard = crate::PROCESS_CWD_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!(
+            "ringi-eval-double-negative-{}.sqlite",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+
+        let id = Uuid::new_v4();
+        let id_str = id.to_string();
+        let condition = one_condition();
+        let evaluator = fake_agent(
+            "eval-still-false.sh",
+            "echo '{\"verdict\":\"False\",\"reason\":\"still over budget\",\"provenance\":[]}'",
+        );
+
+        let mut store = DossierStore::open(&path).unwrap();
+        let registry = test_registry(&path);
+        let dossier = ready_for_decision_with_conditions(
+            id,
+            evaluator.to_str().unwrap(),
+            vec![condition.clone()],
+        );
+        let json = serde_json::to_string(&dossier).unwrap();
+        store.insert_dossier(&id_str, &json).unwrap();
+        store
+            .commit_successor_revision(&id_str, None, &base_revision(), &[])
+            .unwrap();
+
+        // Two full evaluate_conditions calls, both returning False for the same unchanged
+        // revision: neither's sealed event may collide with the other on idempotency_key, even
+        // though both were invoked under the exact same InvocationCoordinate.
+        evaluate_conditions(&id_str, &json, &mut store, &registry).unwrap();
+        evaluate_conditions(&id_str, &json, &mut store, &registry)
+            .expect("a second retry under the same coordinate must not fail to record its event");
 
         let state_json = store.get_dossier_state(&id_str).unwrap().unwrap();
         let updated: SubmittedDossier = serde_json::from_str(&state_json).unwrap();
