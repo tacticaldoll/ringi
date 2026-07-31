@@ -107,9 +107,6 @@ pub fn run_deliberation(
     while turn <= max_turns {
         println!("--- Turn {} ---", turn);
 
-        let question = "Please review the unresolved dissents and risks and provide a claim on how to proceed.".to_string();
-        let respondent_prompt = build_respondent_prompt(&question, &current_revision);
-
         let respondent_coordinate = InvocationCoordinate {
             dossier_id: Uuid::parse_str(dossier_id).unwrap_or_default(),
             role: "respondent".to_string(),
@@ -117,36 +114,64 @@ pub fn run_deliberation(
             turn,
             attempt: 1,
         };
-        let respondent = SubprocessAdapter::new(respondent_program.clone(), vec![]);
-        let req = AgentRequest {
-            role: AgentRole::Respondent,
-            session_instruction: None,
-            prompt: respondent_prompt,
-            working_dir: std::env::current_dir()?,
-            timeout: Duration::from_secs(60),
-            env: HashMap::new(),
+
+        // A retried turn (arbitrator failed after the respondent already succeeded) reuses the
+        // respondent's already-persisted answer instead of re-invoking it — its coordinate is
+        // already Settled, so claimed_invoke would refuse to reclaim it anyway.
+        let claim = match store.find_event_for_coordinate(dossier_id, &respondent_coordinate)? {
+            Some(crate::event::Event {
+                payload: crate::event::EventPayload::PublicRecord(claim),
+                ..
+            }) => {
+                println!(
+                    "Turn {}: Reusing respondent's already-recorded claim.",
+                    turn
+                );
+                claim
+            }
+            Some(_) => bail!(
+                "respondent coordinate {} has a persisted event with an unexpected payload type",
+                respondent_coordinate.idempotency_key()
+            ),
+            None => {
+                let question = "Please review the unresolved dissents and risks and provide a claim on how to proceed.".to_string();
+                let respondent_prompt = build_respondent_prompt(&question, &current_revision);
+                let respondent = SubprocessAdapter::new(respondent_program.clone(), vec![]);
+                let req = AgentRequest {
+                    role: AgentRole::Respondent,
+                    session_instruction: None,
+                    prompt: respondent_prompt,
+                    working_dir: std::env::current_dir()?,
+                    timeout: Duration::from_secs(60),
+                    env: HashMap::new(),
+                };
+
+                println!("Turn {}: Invoking respondent...", turn);
+                let claim = claimed_invoke(
+                    registry,
+                    &respondent_coordinate,
+                    || -> anyhow::Result<String> {
+                        let res = respondent.run(req)?;
+                        if res.exit_code != Some(0) {
+                            bail!("Respondent failed: {}", res.stderr);
+                        }
+                        Ok(res.stdout.trim().to_string())
+                    },
+                )?;
+                println!("Turn {}: Respondent answered with claim: {}", turn, claim);
+
+                // Persist immediately — not batched with the eventual successor commit — so a
+                // later arbitrator failure can never discard a respondent that already succeeded.
+                let mut respondent_event = crate::event::Event::new_public(
+                    crate::event::EventPayload::PublicRecord(claim.clone()),
+                    turn as u64 * 1000,
+                );
+                respondent_event.coordinate = Some(respondent_coordinate.clone());
+                store.record_event(dossier_id, &respondent_event)?;
+
+                claim
+            }
         };
-
-        println!("Turn {}: Invoking respondent...", turn);
-        let claim = claimed_invoke(
-            registry,
-            &respondent_coordinate,
-            || -> anyhow::Result<String> {
-                let res = respondent.run(req)?;
-                if res.exit_code != Some(0) {
-                    bail!("Respondent failed: {}", res.stderr);
-                }
-                Ok(res.stdout.trim().to_string())
-            },
-        )?;
-        println!("Turn {}: Respondent answered with claim: {}", turn, claim);
-
-        // Record respondent event
-        let mut respondent_event = crate::event::Event::new_public(
-            crate::event::EventPayload::PublicRecord(claim.clone()),
-            turn as u64 * 1000,
-        );
-        respondent_event.coordinate = Some(respondent_coordinate);
 
         println!("Turn {}: Building arbitrator prompt...", turn);
         let arbitrator_prompt = build_arbitrator_prompt(&current_revision, &[claim]);
@@ -169,10 +194,14 @@ pub fn run_deliberation(
         };
 
         println!("Turn {}: Invoking arbitrator...", turn);
-        let resolution_output = claimed_invoke(
+        // Applying arbitration (propose_successor's dissent/risk retention and original_proposal
+        // immutability checks) happens *inside* the claim boundary: a response that parses fine
+        // but fails that domain validation is just as unusable as a malformed one, and must
+        // release the claim for retry, not settle it fulfilled.
+        let (mut successor, _next_questions) = claimed_invoke(
             registry,
             &arbitrator_coordinate,
-            || -> anyhow::Result<ArbitrationOutput> {
+            || -> anyhow::Result<(crate::revision::Revision, Vec<String>)> {
                 let res = arbitrator.run(arb_agent_req)?;
                 if res.exit_code != Some(0) {
                     bail!("Arbitrator failed: {}", res.stderr);
@@ -180,25 +209,21 @@ pub fn run_deliberation(
                 let metadata = res
                     .metadata
                     .context("Arbitrator produced no structured output")?;
-                Ok(serde_json::from_value(metadata)?)
+                let output: ArbitrationOutput = serde_json::from_value(metadata)?;
+                println!("Turn {}: Applying arbitration...", turn);
+                apply_arbitration(&current_revision, output).map_err(|e| anyhow::anyhow!(e))
             },
         )?;
 
-        println!("Turn {}: Applying arbitration...", turn);
-        let (mut successor, _next_questions) =
-            apply_arbitration(&current_revision, resolution_output)
-                .map_err(|e| anyhow::anyhow!(e))?;
-
         successor.revision_id = Uuid::new_v4();
 
-        let events = vec![respondent_event];
-
-        // Commit the successor revision atomically with the events.
+        // The respondent's event is already durably persisted (either just now, or recovered
+        // from a prior attempt) — nothing further to commit alongside the successor.
         store.commit_successor_revision(
             dossier_id,
             Some(&current_revision.revision_id.to_string()),
             &successor,
-            &events,
+            &[],
         )?;
 
         current_revision = successor;
@@ -688,6 +713,170 @@ mod tests {
         registry.settle_fulfilled(retry_ticket).unwrap();
 
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_domain_invalid_arbitrator_response_releases_the_claim_not_fulfills_it() {
+        // Structurally valid JSON, but propose_successor rejects it (changed original_proposal):
+        // apply_arbitration's validation must be inside the claim boundary too, not just the
+        // parse — a response that parses fine but fails domain validation is just as unusable.
+        let _guard = crate::PROCESS_CWD_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!(
+            "ringi-loop-domain-invalid-{}.sqlite",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+
+        let id = Uuid::new_v4();
+        let id_str = id.to_string();
+
+        let respondent = fake_agent("resp-ok2.sh", "echo 'looks fine'");
+        // Valid JSON, but its original_proposal differs from the parent's.
+        let arbitrator = fake_agent(
+            "arb-changed-proposal.sh",
+            r#"echo '{"successor_revision":{"revision_id":"22222222-2222-2222-2222-222222222222","parent_digest":null,"content_digest":"x","original_proposal":"a different proposal","current_understanding":"u","positions":[],"dissents":[],"risks":[]},"next_questions":[]}'"#,
+        );
+
+        let mut store = DossierStore::open(&path).unwrap();
+        let registry = test_registry(&path);
+        let dossier = submitted(
+            id,
+            respondent.to_str().unwrap(),
+            arbitrator.to_str().unwrap(),
+            1,
+        );
+        let json = serde_json::to_string(&dossier).unwrap();
+        store.insert_dossier(&id_str, &json).unwrap();
+
+        let initial = Revision {
+            revision_id: Uuid::new_v4(),
+            parent_digest: None,
+            content_digest: Digest("init".into()),
+            original_proposal: "p".into(),
+            current_understanding: "u".into(),
+            positions: vec![],
+            dissents: vec![],
+            risks: vec![],
+        };
+        store
+            .commit_successor_revision(&id_str, None, &initial, &[])
+            .unwrap();
+
+        let err = run_deliberation(&id_str, &json, &mut store, &registry).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("original_proposal cannot change across a successor revision")
+        );
+
+        // The arbitrator's claim must have been released, not fulfilled, even though its
+        // response parsed successfully — domain validation failed after the parse.
+        let arbitrator_coordinate = InvocationCoordinate {
+            dossier_id: id,
+            role: "arbitrator".to_string(),
+            input_digest: initial.content_digest.clone(),
+            turn: 1,
+            attempt: 1,
+        };
+        let retry_ticket = registry
+            .claim_invocation(&arbitrator_coordinate)
+            .unwrap()
+            .expect("a released coordinate must be claimable again, not stuck as fulfilled");
+        registry.settle_fulfilled(retry_ticket).unwrap();
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_retried_turn_does_not_reinvoke_an_already_succeeded_respondent() {
+        let _guard = crate::PROCESS_CWD_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("ringi-loop-resume-{}.sqlite", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let counter_path = dir.join(format!("ringi-loop-resume-count-{}", std::process::id()));
+        let _ = std::fs::remove_file(&counter_path);
+        let fix_flag_path = dir.join(format!("ringi-loop-resume-fix-{}", std::process::id()));
+        let _ = std::fs::remove_file(&fix_flag_path);
+
+        let id = Uuid::new_v4();
+        let id_str = id.to_string();
+
+        // Counts invocations by appending one byte per call, so the test can assert the
+        // respondent subprocess ran exactly once across both run_deliberation calls.
+        let respondent = fake_agent(
+            "resp-counting.sh",
+            &format!(
+                "printf x >> '{}'\necho 'the only answer'",
+                counter_path.display()
+            ),
+        );
+        // Fails (malformed output) until fix_flag_path exists, then succeeds — modeling "the
+        // underlying problem gets fixed" between the two run_deliberation calls.
+        let arbitrator = fake_agent(
+            "arb-toggle.sh",
+            &format!(
+                "if [ -f '{}' ]; then \
+                   echo '{{\"successor_revision\":{{\"revision_id\":\"11111111-1111-1111-1111-111111111111\",\"parent_digest\":null,\"content_digest\":\"placeholder\",\"original_proposal\":\"p\",\"current_understanding\":\"u2\",\"positions\":[],\"dissents\":[],\"risks\":[]}},\"next_questions\":[]}}'; \
+                 else \
+                   echo 'not json at all'; \
+                 fi",
+                fix_flag_path.display()
+            ),
+        );
+
+        let mut store = DossierStore::open(&path).unwrap();
+        let registry = test_registry(&path);
+        let dossier = submitted(
+            id,
+            respondent.to_str().unwrap(),
+            arbitrator.to_str().unwrap(),
+            1,
+        );
+        let json = serde_json::to_string(&dossier).unwrap();
+        store.insert_dossier(&id_str, &json).unwrap();
+
+        let initial = Revision {
+            revision_id: Uuid::new_v4(),
+            parent_digest: None,
+            content_digest: Digest("init".into()),
+            original_proposal: "p".into(),
+            current_understanding: "u".into(),
+            positions: vec![],
+            dissents: vec![],
+            risks: vec![],
+        };
+        store
+            .commit_successor_revision(&id_str, None, &initial, &[])
+            .unwrap();
+
+        // First attempt: respondent succeeds, arbitrator fails on malformed output.
+        let err = run_deliberation(&id_str, &json, &mut store, &registry).unwrap_err();
+        assert!(err.to_string().contains("no structured output"));
+        assert_eq!(
+            std::fs::read_to_string(&counter_path).unwrap().len(),
+            1,
+            "respondent must have been invoked exactly once so far"
+        );
+
+        // Fix the underlying problem and retry the same turn.
+        std::fs::write(&fix_flag_path, "").unwrap();
+        run_deliberation(&id_str, &json, &mut store, &registry)
+            .expect("the retried turn should now complete");
+
+        assert_eq!(
+            std::fs::read_to_string(&counter_path).unwrap().len(),
+            1,
+            "the respondent must not be re-invoked on the retried turn"
+        );
+        assert_eq!(state_of(&store, &id_str), LifecycleState::ReadyForDecision);
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&counter_path);
+        let _ = std::fs::remove_file(&fix_flag_path);
     }
 
     fn base_revision() -> Revision {

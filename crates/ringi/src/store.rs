@@ -238,61 +238,141 @@ impl DossierStore {
 
         let mut events = Vec::new();
         for row in rows {
-            let (id, timestamp, visibility, payload_type, payload_content, evaluator, reasoning) =
-                row?;
-            let id = Uuid::parse_str(&id).map_err(|error| {
-                StoreError::CorruptState(format!("event {id} has an invalid UUID: {error}"))
-            })?;
-            let visibility = match visibility.as_str() {
-                "public" => crate::event::EventVisibility::Public,
-                "sealed" => crate::event::EventVisibility::Sealed,
-                other => {
-                    return Err(StoreError::CorruptState(format!(
-                        "event {id} has an unknown visibility: {other}"
-                    )));
-                }
-            };
-            let payload = match payload_type.as_str() {
-                "raw_transcript" => {
-                    crate::event::EventPayload::RawTranscript(payload_content.ok_or_else(|| {
-                        StoreError::CorruptState(format!("event {id} is missing payload_content"))
-                    })?)
-                }
-                "synthesis" => {
-                    crate::event::EventPayload::Synthesis(payload_content.ok_or_else(|| {
-                        StoreError::CorruptState(format!("event {id} is missing payload_content"))
-                    })?)
-                }
-                "public_record" => {
-                    crate::event::EventPayload::PublicRecord(payload_content.ok_or_else(|| {
-                        StoreError::CorruptState(format!("event {id} is missing payload_content"))
-                    })?)
-                }
-                "sealed_evaluation" => crate::event::EventPayload::SealedEvaluation {
-                    evaluator: evaluator.ok_or_else(|| {
-                        StoreError::CorruptState(format!("event {id} is missing evaluator"))
-                    })?,
-                    reasoning: reasoning.ok_or_else(|| {
-                        StoreError::CorruptState(format!("event {id} is missing reasoning"))
-                    })?,
-                },
-                other => {
-                    return Err(StoreError::CorruptState(format!(
-                        "event {id} has an unknown payload_type: {other}"
-                    )));
-                }
-            };
-            events.push(crate::event::Event {
-                id,
-                timestamp: u64::try_from(timestamp).map_err(|_| {
-                    StoreError::CorruptState(format!("event {id} has a negative timestamp"))
-                })?,
-                visibility,
-                payload,
-                coordinate: None,
-            });
+            events.push(Self::parse_event_row(row?)?);
         }
         Ok(events)
+    }
+
+    /// The event recorded for `dossier_id` under `coordinate`'s exact `idempotency_key`, if one
+    /// has already been persisted — the durable record a retry uses to recover an already-
+    /// succeeded invocation's result instead of re-invoking it. `coordinate` is not restored on
+    /// the returned event (see `events_for_dossier`'s note); callers already know the coordinate
+    /// they looked up.
+    pub fn find_event_for_coordinate(
+        &self,
+        dossier_id: &str,
+        coordinate: &crate::event::InvocationCoordinate,
+    ) -> Result<Option<crate::event::Event>, StoreError> {
+        let key = coordinate.idempotency_key();
+        let row = self
+            .conn
+            .query_row(
+                "SELECT id, timestamp, visibility, payload_type, payload_content, evaluator, reasoning
+                 FROM events WHERE dossier_id = ? AND idempotency_key = ?",
+                params![dossier_id, key],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                        row.get::<_, Option<String>>(5)?,
+                        row.get::<_, Option<String>>(6)?,
+                    ))
+                },
+            )
+            .optional()?;
+        row.map(Self::parse_event_row).transpose()
+    }
+
+    /// Persists a single event immediately, independent of any revision commit — used to
+    /// durably record a turn-step's result (e.g. the respondent's answer) as soon as it succeeds,
+    /// so a later step's failure cannot discard it. Shares `EventRow`'s mapping with
+    /// `commit_successor_revision`, which still owns the multi-event, revision-atomic case.
+    pub fn record_event(
+        &mut self,
+        dossier_id: &str,
+        event: &crate::event::Event,
+    ) -> Result<(), StoreError> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let row = EventRow::from(event);
+        tx.execute(
+            "INSERT INTO events (id, dossier_id, timestamp, visibility, payload_type, payload_content, evaluator, reasoning, idempotency_key)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            params![
+                event.id.to_string(),
+                dossier_id,
+                event.timestamp,
+                row.visibility,
+                row.payload_type,
+                row.payload_content,
+                row.evaluator,
+                row.reasoning,
+                row.idempotency_key
+            ],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Parses one `events` row (as selected by `events_for_dossier`/`find_event_for_coordinate`)
+    /// into an `Event`. `coordinate` is always `None` — see `events_for_dossier`'s doc.
+    fn parse_event_row(
+        row: (
+            String,
+            i64,
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        ),
+    ) -> Result<crate::event::Event, StoreError> {
+        let (id, timestamp, visibility, payload_type, payload_content, evaluator, reasoning) = row;
+        let id = Uuid::parse_str(&id).map_err(|error| {
+            StoreError::CorruptState(format!("event {id} has an invalid UUID: {error}"))
+        })?;
+        let visibility = match visibility.as_str() {
+            "public" => crate::event::EventVisibility::Public,
+            "sealed" => crate::event::EventVisibility::Sealed,
+            other => {
+                return Err(StoreError::CorruptState(format!(
+                    "event {id} has an unknown visibility: {other}"
+                )));
+            }
+        };
+        let payload = match payload_type.as_str() {
+            "raw_transcript" => {
+                crate::event::EventPayload::RawTranscript(payload_content.ok_or_else(|| {
+                    StoreError::CorruptState(format!("event {id} is missing payload_content"))
+                })?)
+            }
+            "synthesis" => {
+                crate::event::EventPayload::Synthesis(payload_content.ok_or_else(|| {
+                    StoreError::CorruptState(format!("event {id} is missing payload_content"))
+                })?)
+            }
+            "public_record" => {
+                crate::event::EventPayload::PublicRecord(payload_content.ok_or_else(|| {
+                    StoreError::CorruptState(format!("event {id} is missing payload_content"))
+                })?)
+            }
+            "sealed_evaluation" => crate::event::EventPayload::SealedEvaluation {
+                evaluator: evaluator.ok_or_else(|| {
+                    StoreError::CorruptState(format!("event {id} is missing evaluator"))
+                })?,
+                reasoning: reasoning.ok_or_else(|| {
+                    StoreError::CorruptState(format!("event {id} is missing reasoning"))
+                })?,
+            },
+            other => {
+                return Err(StoreError::CorruptState(format!(
+                    "event {id} has an unknown payload_type: {other}"
+                )));
+            }
+        };
+        Ok(crate::event::Event {
+            id,
+            timestamp: u64::try_from(timestamp).map_err(|_| {
+                StoreError::CorruptState(format!("event {id} has a negative timestamp"))
+            })?,
+            visibility,
+            payload,
+            coordinate: None,
+        })
     }
 
     pub fn get_latest_revision(
@@ -637,6 +717,56 @@ mod tests {
             .expect("get")
             .unwrap();
         assert_eq!(state, "draft");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn record_event_is_found_by_its_coordinate_and_not_by_a_different_one() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!(
+            "ringi-dossier-record-event-{}.sqlite",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+
+        {
+            let mut store = DossierStore::open(&path).expect("open");
+            store.insert_dossier("dossier-1", "draft").unwrap();
+
+            let coord = crate::event::InvocationCoordinate {
+                dossier_id: Uuid::new_v4(),
+                role: "respondent".into(),
+                input_digest: crate::revision::Digest("dig".into()),
+                turn: 1,
+                attempt: 1,
+            };
+            let mut event = crate::event::Event::new_public(
+                crate::event::EventPayload::PublicRecord("the claim".into()),
+                1,
+            );
+            event.coordinate = Some(coord.clone());
+
+            store.record_event("dossier-1", &event).unwrap();
+
+            let found = store
+                .find_event_for_coordinate("dossier-1", &coord)
+                .unwrap()
+                .expect("event should be found by its own coordinate");
+            assert_eq!(
+                found.payload,
+                crate::event::EventPayload::PublicRecord("the claim".into())
+            );
+
+            let other_coord = crate::event::InvocationCoordinate { turn: 2, ..coord };
+            assert!(
+                store
+                    .find_event_for_coordinate("dossier-1", &other_coord)
+                    .unwrap()
+                    .is_none(),
+                "a different coordinate must not match"
+            );
+        }
 
         let _ = std::fs::remove_file(&path);
     }

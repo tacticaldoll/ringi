@@ -16,10 +16,11 @@ Before invoking an Agent CLI for a respondent, arbitrator, or condition-evaluato
 SHALL claim a durable pact keyed by that invocation's `InvocationCoordinate` through
 `SqliteRegistry`, and SHALL invoke the agent only if the claim succeeds. After the agent responds,
 ringi SHALL settle the claim — fulfilled only if the invocation produced a result ringi could
-actually use (a zero exit code and, where a structured output is required, output that parses into
-the expected type), released for the same coordinate on any other outcome — so a crash between the
-invocation and the eventual event/revision commit leaves a durable, inspectable trace instead of
-none, and a malformed or unusable response never permanently blocks the coordinate.
+actually use (a zero exit code; where a structured output is required, output that parses into the
+expected type; and where the parsed output must additionally pass domain validation before it is
+usable, that validation too) — released for the same coordinate on any other outcome — so a crash
+between the invocation and the eventual event/revision commit leaves a durable, inspectable trace
+instead of none, and a malformed or unusable response never permanently blocks the coordinate.
 
 #### Scenario: A successful invocation is claimed then fulfilled
 
@@ -39,10 +40,33 @@ none, and a malformed or unusable response never permanently blocks the coordina
 - **THEN** the claim is released, not settled fulfilled, so the same coordinate remains claimable
   once the underlying problem is fixed
 
+#### Scenario: A response that parses but fails domain validation is released, not fulfilled
+
+- **WHEN** an arbitrator invocation exits zero and its output parses into the expected structured
+  type, but applying it (e.g. `propose_successor`'s dissent/risk retention or `original_proposal`
+  immutability checks) rejects it
+- **THEN** the claim is released, not settled fulfilled, so the same coordinate remains claimable
+  once the underlying problem is fixed
+
 #### Scenario: Re-submitting the same coordinate is idempotent
 
 - **WHEN** a pact is submitted for a coordinate that was already submitted
 - **THEN** no duplicate pact is created — the same underlying pact is claimed
+
+### Requirement: A turn resumes after arbitrator failure without re-invoking the respondent
+
+If a turn's respondent invocation has already succeeded (its event is durably persisted) but the
+arbitrator invocation for that same turn then fails, retrying `run_deliberation` on the same
+dossier SHALL reuse the respondent's already-persisted answer rather than re-invoking the
+respondent, and proceed to retry only the arbitrator step.
+
+#### Scenario: A retried turn does not re-invoke an already-succeeded respondent
+
+- **WHEN** a turn's respondent has already succeeded and its arbitrator invocation then fails, and
+  `run_deliberation` is invoked again for the same dossier before any successor revision is
+  committed
+- **THEN** the respondent is not invoked a second time, and the arbitrator is retried using the
+  respondent's already-persisted claim
 
 ### Requirement: Claiming one coordinate never claims or settles a different coordinate's pact
 

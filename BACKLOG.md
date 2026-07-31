@@ -109,14 +109,3 @@ coverage consumer. Any such advance happens in suunta's own repo, never inside a
   outside the one-dossier MVP.
 - **Direct API adapter:** a thin, single configured model adapter remains possible only when forced;
   no routing, semantic caching, or provider layer is permitted.
-- **Partial-turn retry:** `run_deliberation` restarts every retried turn from the respondent step
-  unconditionally. If the respondent settles fulfilled but the arbitrator then fails, re-running
-  `continue` re-derives the *same* respondent `InvocationCoordinate` (nothing bumps `attempt`) and
-  now correctly refuses to reclaim an already-settled pact — so the turn cannot be resumed at all
-  until either the respondent's coordinate gains a bumped `attempt` to force a fresh claim, or the
-  loop learns to skip a step whose coordinate is already settled and reuse its result. Confirmed
-  live while manually verifying `settle-on-real-invocation-success`: the arbitrator's own coordinate
-  was correctly retryable in isolation (SQLite showed it `deferred`, reclaimable), but driving the
-  retry through `ringi continue` end-to-end still failed, one step earlier, on the respondent's now
-  properly-enforced already-settled check. Not a regression from that change — `design.md` already
-  flagged attempt-bumping as unwired; this is that gap's first live manifestation.
