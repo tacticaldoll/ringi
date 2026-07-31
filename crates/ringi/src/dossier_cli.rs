@@ -203,6 +203,18 @@ pub fn add_condition_command(
     Ok(())
 }
 
+/// Whether `state` is one of the states for which "is this ready for a decision" is still a
+/// live question — false once a decision has already been rendered (a terminal state).
+fn is_decision_pending(state: &LifecycleState) -> bool {
+    matches!(
+        state,
+        LifecycleState::Draft
+            | LifecycleState::Submitted
+            | LifecycleState::Deliberating
+            | LifecycleState::ReadyForDecision
+    )
+}
+
 pub fn inspect_command(id: &str, store: &DossierStore) -> anyhow::Result<()> {
     let state_json = store
         .get_dossier_state(id)?
@@ -216,10 +228,14 @@ pub fn inspect_command(id: &str, store: &DossierStore) -> anyhow::Result<()> {
         println!("Latest Revision: {}", rev.revision_id);
         // Readiness is a mechanical fact recomputed from the residual, never a stored flag.
         // Matches run_deliberation's own rule: an un-deliberated root is never ready on its own.
-        println!(
-            "Readiness: {}",
-            crate::convergence::is_ready_for_decision(&rev)
-        );
+        // Once a decision has been rendered (a terminal state), readiness is no longer a live
+        // question, so the line is omitted rather than shown alongside an already-settled state.
+        if is_decision_pending(&dossier.state) {
+            println!(
+                "Readiness: {}",
+                crate::convergence::is_ready_for_decision(&rev)
+            );
+        }
     }
 
     if !dossier.conditions.is_empty() {
@@ -439,5 +455,37 @@ mod tests {
         let state_json = store.get_dossier_state(&id_str).unwrap().unwrap();
         let updated: SubmittedDossier = serde_json::from_str(&state_json).unwrap();
         assert_eq!(updated.state, LifecycleState::Approved);
+    }
+
+    #[test]
+    fn readiness_is_a_live_question_only_before_a_decision_is_rendered() {
+        let pending = [
+            LifecycleState::Draft,
+            LifecycleState::Submitted,
+            LifecycleState::Deliberating,
+            LifecycleState::ReadyForDecision,
+        ];
+        let terminal = [
+            LifecycleState::Approved,
+            LifecycleState::ApprovedWithConditions,
+            LifecycleState::Rejected,
+            LifecycleState::Cancelled,
+            LifecycleState::Invalidated,
+        ];
+
+        for state in &pending {
+            assert!(
+                is_decision_pending(state),
+                "{:?} should still treat readiness as a live question",
+                state
+            );
+        }
+        for state in &terminal {
+            assert!(
+                !is_decision_pending(state),
+                "{:?} has already rendered a decision; readiness is no longer live",
+                state
+            );
+        }
     }
 }

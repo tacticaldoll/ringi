@@ -13,7 +13,10 @@ from the domain behavior it delegates to.
 
 `ringi inspect`'s displayed readiness for a dossier's latest revision SHALL be `true` only when
 `run_deliberation` would also treat that revision as ready — that is, the revision has a parent
-(is a successor, not the undeliberated root) and its residual has converged.
+(is a successor, not the undeliberated root) and its residual has converged. Once a dossier has
+reached a terminal state (`Approved`, `ApprovedWithConditions`, `Rejected`, `Cancelled`,
+`Invalidated`), a decision has already been rendered and readiness is no longer a live question;
+`inspect` SHALL NOT display a readiness value at all for such a dossier.
 
 #### Scenario: An undeliberated root dossier reports not ready
 
@@ -27,6 +30,13 @@ from the domain behavior it delegates to.
 - **WHEN** `inspect` is run on a dossier whose latest revision is a successor with a converged
   residual
 - **THEN** the displayed readiness is `true`
+
+#### Scenario: A terminal-state dossier displays no readiness value
+
+- **WHEN** `inspect` is run on a dossier whose state is `Approved`, `ApprovedWithConditions`,
+  `Rejected`, `Cancelled`, or `Invalidated`
+- **THEN** no `Readiness:` line is printed, even if the latest revision's residual is mechanically
+  converged
 
 ### Requirement: A dossier draft file's frontmatter is cleanly delimited
 
