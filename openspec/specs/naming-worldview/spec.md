@@ -44,14 +44,18 @@ Done, so the drift that precedes re-monolithing fails the gate mechanically.
 Beyond guarding against banned vocabulary naming a declaration, the confinement of a brick crate's
 own imports to its seam module SHALL be mechanically enforced, not left to review discipline alone.
 For `suunta`, this SHALL mean: `suunta` is imported only from `crate::convergence`; an import of
-`suunta` from any other module in the `ringi` crate SHALL fail the check.
+`suunta` from any other module in the `ringi` crate SHALL fail the check. For `pacta`, this SHALL
+mean: `pacta` is imported only from `crate::registry`; an import of `pacta` from any other module
+in the `ringi` crate SHALL fail the check.
 
 #### Scenario: The current source passes the confinement check
 
 - **WHEN** the confinement check runs against `ringi`'s current source
-- **THEN** it passes, because `suunta` is imported only from `crate::convergence`
+- **THEN** it passes, because `suunta` is imported only from `crate::convergence` and `pacta` is
+  imported only from `crate::registry`
 
 #### Scenario: An import of a confined brick outside its seam would fail the check
 
-- **WHEN** a module other than `crate::convergence` imports `suunta`
+- **WHEN** a module other than `crate::convergence` imports `suunta`, or a module other than
+  `crate::registry` imports `pacta`
 - **THEN** the confinement check fails

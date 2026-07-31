@@ -29,3 +29,22 @@ fn suunta_is_confined_to_the_convergence_seam() {
     let outcome = check(constitution().static_boundaries(), &manifest());
     assert_eq!(outcome.exit_code(), 0, "{outcome:?}");
 }
+
+fn pacta_constitution() -> Constitution {
+    Constitution::new("ringi").boundary(
+        ModuleBoundary::in_crate("ringi")
+            .module("crate::registry")
+            .confine_external_crate("pacta")
+            .because(
+                "pacta's vocabulary (Pact, Claim, Retainer, Registry, lifecycle, ...) is \
+                 confined to the registry seam and never names a ringi domain type — see \
+                 docs/naming.md's seam rule",
+            ),
+    )
+}
+
+#[test]
+fn pacta_is_confined_to_the_registry_seam() {
+    let outcome = check(pacta_constitution().static_boundaries(), &manifest());
+    assert_eq!(outcome.exit_code(), 0, "{outcome:?}");
+}
