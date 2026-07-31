@@ -4,22 +4,23 @@
 
 How ringi's command surface drives a run: `ringi run` and `ringi init` turn a config file plus
 command-line arguments into a `RunConfig`, drive a run through the composition root
-(`run_from_config`) over the in-memory reference backend, and present the outcome with an exit
-code. It owns command-surface wiring and presentation only — no lifecycle, convergence, or
-verification of its own (those stay the composed loop's and the seams'), and, for now, no
-durability (the run is in-memory; a durable backend and resume are a later phase).
+(`run_from_config`) over the durable store, record the outcome (see the `durable-runs`
+capability), and present it with an exit code. It owns command-surface wiring, recording, and
+presentation only — no lifecycle, convergence, or verification of its own (those stay the composed
+loop's and the seams').
 
 ## Requirements
 
 ### Requirement: The Run Command Drives A Run And Presents Its Outcome
 The `ringi run` command SHALL take a workspace path and a task on the command line, assemble a
 `RunConfig` from those arguments and the loaded config file, drive the run through the composition
-root (`run_from_config`) over the in-memory reference backend, and present the run's outcome to
+root (`run_from_config`) over the durable store (the one user-scope SQLite backend), record the
+run's outcome to that store (see the `durable-runs` capability), and present the run's outcome to
 the user. The command SHALL report whether the run converged, how many rounds it took, and any
 findings left open. The command's exit status SHALL be success if and only if the run converged;
 a run that reaches the round limit without converging SHALL exit non-zero. The command SHALL only
-wire and present — it SHALL NOT itself sequence rounds, decide convergence, or verify (those stay
-the composed loop's and the seams').
+wire, record, and present — it SHALL NOT itself sequence rounds, decide convergence, or verify
+(those stay the composed loop's and the seams').
 
 #### Scenario: A converging run reports success
 - **WHEN** `ringi run` drives a run that converges within the round limit
@@ -29,7 +30,7 @@ the composed loop's and the seams').
 - **WHEN** `ringi run` drives a run that reaches the round limit without converging
 - **THEN** it prints the outcome including the still-open findings and exits with a non-zero status
 
-#### Scenario: The command only wires and presents
+#### Scenario: The command only wires, records, and presents
 - **WHEN** `ringi run` drives a run
 - **THEN** convergence is decided by the composed loop and verification by the Verify seam, and the command contributes no sequencing, completion calculation, or verification of its own
 
