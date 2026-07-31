@@ -1,3 +1,10 @@
+//! Thin CLI command wiring: each `pub fn ..._command` is one `ringi` subcommand, translating
+//! between the on-disk draft markdown file (frontmatter + body, under `.ringi/dossiers/`), the
+//! durable `DossierStore`, and the domain modules (`dossier`, `revision`, `deliberate_loop`,
+//! `archive`). It owns no domain logic of its own — a command either delegates to a domain
+//! function or does the minimal glue (parsing frontmatter, computing a path) a human-facing CLI
+//! needs that the domain modules should not need to know about.
+
 use crate::dossier::{
     Condition, Frontmatter, LifecycleState, parse_frontmatter, serialize_frontmatter,
 };

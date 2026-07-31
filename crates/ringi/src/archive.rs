@@ -1,3 +1,18 @@
+//! Renders a terminal dossier's archive: a human-readable, integrity-bound record of its final
+//! SSOT, sealed with a SHA-256 digest over the rendered text.
+//!
+//! Per `PROJECT.md`'s Archive invariant, this is a record only — it grants no execution
+//! authority and triggers no workspace effect. `render_archive` refuses a non-terminal dossier
+//! (only `Approved`/`Rejected`/`Cancelled`/`Invalidated` may be archived).
+//!
+//! **Known incompleteness, not a deliberate omission:** the rendered "Public Event Index" and
+//! "Sealed Audit Section" are still placeholder text ("omitted for brevity") — no event, public
+//! or sealed, is actually fetched and rendered yet. A human auditing an archived dossier today
+//! cannot see the events or evaluator reasoning that led to the decision, only the final SSOT
+//! text. Closing this is a separate change; this doc names the gap so it isn't mistaken for the
+//! sealed-evaluation invariant `event.rs`'s projection already enforces for respondent prompts
+//! (a different, already-honored guarantee).
+
 use crate::dossier::LifecycleState;
 use crate::store::DossierStore;
 use anyhow::Context;

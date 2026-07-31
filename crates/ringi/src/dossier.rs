@@ -1,3 +1,12 @@
+//! The dossier domain model: `LifecycleState`'s transition machine, the settings a submission
+//! locks (`LockedSettings`, `ArbitrationSettings`, `RoleBindings`, `Limits`), draft frontmatter
+//! parse/serialize, and `Condition`.
+//!
+//! `SubmittedDossier::transition_to` is the one place lifecycle transitions are validated — a
+//! terminal state accepts no further transition, and only the pairs the state machine names are
+//! legal. This module owns no revision content (`revision.rs`) and no persistence (`store.rs`);
+//! it is the shape of the dossier itself, checked in memory.
+
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
