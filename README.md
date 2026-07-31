@@ -1,45 +1,38 @@
-# rust-openspec-starter
+# Ringi
 
-An opinionated starter for Rust projects that use OpenSpec, ADRs, conventional
-commits, and AI-agent-friendly governance from day one.
+Ringi is a local automation orchestrator for Agent CLIs. It drives a
+**Builder → Reviewer → verify → gate → retry** loop over code work, keeping durable state,
+enforcing policy and human approval, and verifying with objective tools — while the Agent
+CLIs do the thinking and editing.
 
-This repository is intentionally small. It provides the process skeleton for a
-new project, not product-specific architecture.
+A *ringi* (稟議) is a proposal circulated for review and approval before it acts. Ringi runs
+that shape: agents propose, tools and a reviewer scrutinize, policy and a human gate, and the
+loop converges or stops.
 
-## Use
+## What ringi owns — and what it composes
 
-1. Create a new repository from this starter.
-2. Replace placeholder project metadata in `PROJECT.md`, `README.md`, and
-   `Cargo.toml`.
-3. Install or expose the OpenSpec CLI in your shell.
-4. Generate local agent shims for your editor or agent:
+Ringi is a thin controller, not a runtime. The hard mechanics come from the pacta family:
 
-   ```bash
-   openspec init --tools codex
-   # or: openspec init --tools claude,cursor,github-copilot
-   ```
+- **pacta** — durable step lifecycle (claim → execute → settle, with `release` for retry);
+- **suunta** — convergence: is the run done?
+- **shaahid** — step idempotency, so a resumed step never runs twice.
 
-5. Start the first project-specific change with OpenSpec:
+Ringi owns only its own domain: Agent-CLI adapters, subprocess execution, git-worktree
+isolation, policy content, approval, artifacts, and the loop that wires it all. It is a
+family **leaf** — an application, not a library.
 
-   ```bash
-   openspec new change "initial-project-shape"
-   ```
+## Status (0.1.0, in development)
 
-   This change should replace placeholders, choose the real crate layout, add
-   the first specs, and make the Rust Definition of Done runnable.
+Project shape only: the command surface exists (stubbed); behavior is built bet-first — see
+`BACKLOG.md`. The first milestone is a minimal composition loop proving the family bricks
+compose with acceptable friction.
 
-## Included
+## Architecture
 
-- `AGENTS.md` - repository rules for AI coding agents and humans.
-- `PROJECT.md` - project-specific contract, terminology, and priorities.
-- `docs/development-flow.md` - short OpenSpec and commit checklist.
-- `docs/adr/` - architecture decision record skeleton.
-- `openspec/` - empty OpenSpec structure ready for specs and changes.
-- A Rust workspace policy anchor in `Cargo.toml`. It intentionally has no
-  crates until the first project-specific change chooses the real layout.
-
-Generated agent shims such as `.codex/` and `.claude/` are per-clone local
-files and should not be committed.
+- `PROJECT.md` — vision, the invariants to protect, non-goals.
+- `AGENTS.md` — operating protocol and the Definition of Done.
+- `BACKLOG.md` — the bet, the phased plan, seam design, and the family-dependency stance.
+- `openspec/specs/` — shipped requirements.
 
 ## License
 
