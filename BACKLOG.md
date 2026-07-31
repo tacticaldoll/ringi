@@ -28,19 +28,21 @@ than relabelling them.
   successor *transition*, never the decision; ringi holds and validates the canonical revision and
   never infers state from prose. The agent does not author the whole successor state (mechanism —
   `Motion` — see below).
-- **Structured-move authorship (`Motion`) is decided, not deferred (2026-07-28):** the arbitrator
-  authoring an entire successor `Revision` each turn, rather than declaring discrete moves, is
-  promoted from Deferred Work to a committed direction. Evidence: a real bug this session
-  (`fix(revision): enforce original_proposal immutability across successors`) where the
-  whole-successor JSON silently mutated a field that must never change, caught only by a post-hoc
-  diff — plus the `TEMPORARY STOPGAP` comment already naming the one-line-JSON coupling in
-  `build_arbitrator_prompt` as fragile and destined for removal. This decision is scoped to the
-  authorship mechanism itself: it does **not** also settle `Residual expansion` or `Prompt-width
-  granularity` (still Deferred Work below, now unlocked for design rather than parked) or shaahid's
-  re-assessment (Family Dependency Stance below) — those need their own design/evaluation work
-  before they are themselves decided. `Motion`'s own data model, invocation shape, and
-  apply/validate mechanics are not designed yet; this entry records that ringi has decided to do
-  that design work, not what it will conclude.
+- **Structured-move authorship (`Motion`) has shipped (2026-07-28):** the arbitrator no longer
+  authors an entire successor `Revision` each turn. `ArbitrationOutput` is now
+  `{ current_understanding, moves: Vec<Move> }`; `Move` covers resolving a dissent, adding or
+  closing a risk, and asking or answering a question, each targeting one residual item by stable
+  id with whatever provenance that kind requires. `Revision::apply_moves` validates each move
+  individually and applies a batch atomically — one invalid move rejects the whole batch, matching
+  the prior all-or-nothing turn behavior. `original_proposal`/`revision_id`/`parent_digest`/
+  `content_digest` are no longer read from the agent at all, which removes the
+  immutability-check bug class structurally rather than validating it more strictly. `Question`
+  joined `Dissent`/`Risk` as a real residual item with its own convergence target category and
+  store persistence; `build_respondent_prompt` gained an `## Open Questions` section, and
+  `build_arbitrator_prompt` now shows every unresolved item's stable id (a gap found while
+  dogfooding: ringi mints ids for new risks/questions, so without this the arbitrator could never
+  target an existing item again). Conditions (the isolated per-condition evaluator loop) remain
+  explicitly untouched — see `Residual expansion` below.
 - **Convergence is mechanical, not agent-declared.** Readiness for human decision is computed by
   suunta (`plan_residual(...).is_converged()`) over the residual, never asserted by the arbitrator;
   readiness ceases to be an agent output. An `Unknown` verdict is conservatively retained, so
@@ -72,21 +74,22 @@ domain exercises its public contract honestly:
   invoking the agent and committing its result is durably distinguishable from a completed attempt.
   Revived from a pre-reframe implementation this repo had already conformance-proven, deleted as
   collateral with the old execution model rather than for being unfit.
-- **suunta owns evaluation of the residual of dissents and risks.** `convergence.rs` projects a
-  revision's open dissents and risks onto a suunta `Bearing` and reports readiness from
-  `Residual::is_converged()`; readiness is never an agent claim.
-- **shaahid is assessed and deferred, not merely unattached.** A structural-dependency assessment
-  concluded **Defer**: `InvocationCoordinate::input_digest` is already `Revision::content_digest`,
-  computed over exactly the fields (`original_proposal`, `current_understanding`, `positions`,
-  `dissents`, `risks`) that `build_respondent_prompt` reads — so a coordinate's identity already
-  ties to its content, and shaahid's `Seal`/`Fingerprint` contradiction detection (a drifted
-  `Fingerprint` under a repeated `Seal`, or the reverse) has no path to fire today. The reopening
-  trigger was **Motion** or **prompt-width granularity** letting an invocation's actual content vary
-  independently of those five fields — **Motion is now a Settled Decision (2026-07-28, see
-  above)**, so this trigger has fired in principle. Re-running the assessment is still blocked on
-  `Motion`'s own design landing (its actual invocation-content shape isn't defined yet); do not
-  assume the prior Defer still holds once that design exists, and do not re-run the assessment
-  before it does — there is nothing concrete yet to assess against.
+- **suunta owns evaluation of the residual of dissents, risks, and questions.** `convergence.rs`
+  projects a revision's open dissents, risks, and (since `Motion` shipped) questions onto a suunta
+  `Bearing` and reports readiness from `Residual::is_converged()`; readiness is never an agent
+  claim.
+- **shaahid is assessed and deferred, not merely unattached — re-assessed after `Motion` shipped,
+  Defer still holds.** `InvocationCoordinate::input_digest` is still a real content hash — now
+  covering `original_proposal`, `current_understanding`, `positions`, `dissents`, `risks`, and
+  `questions` — computed from whatever revision content the invocation's prompt was actually built
+  from, exactly as before `Motion`. Coordinate identity and content remain the same value; shaahid's
+  `Seal`/`Fingerprint` contradiction detection still has no gap to fill. The retry-drift failure
+  mode it exists to catch is handled structurally: a coordinate reclaimed after release recomputes
+  its `input_digest` from the current revision, so a retry against genuinely different content
+  produces a genuinely different coordinate. **Re-open this only if a future coordinate scheme
+  deliberately goes coarser than a full content hash** (e.g. for `Prompt-width granularity`'s narrow
+  variant, not yet designed) — do not assume Defer survives a coordinate-scheme change made without
+  revisiting this.
 
 No dependency is retained for historical loyalty. Ringi must not recreate any retained mechanism.
 
@@ -100,17 +103,18 @@ coverage consumer. Any such advance happens in suunta's own repo, never inside a
 
 ## Deferred Work
 
-- **Prompt-width granularity:** unlocked (not settled) by `Motion` being decided (Settled
-  Decisions, above) — the same `Motion` substrate would admit a wide prompt (the agent enumerates
-  and declares many moves in one call) or a narrow one (ringi enumerates the residual and asks one
-  closed question per item). This is prompt width and invocation count, not two architectures;
-  wire it to the Economy/Balanced/Assurance posture rather than choosing globally, once `Motion`'s
-  own design exists to wire it against.
-- **Residual expansion:** unlocked (not settled) by `Motion` being decided — for suunta's residual
-  to cover all four categories, open questions and conditions must live in the `Revision` rather
-  than be transient, and risks need stable ids (they are bare strings today) so each residual item
-  carries a `Sigil`. v1 convergence counts dissents and risks only; questions and conditions follow
-  once `Motion`'s design defines how they're declared and applied.
+- **Prompt-width granularity:** `Motion` shipped the *wide* shape by construction — the arbitrator
+  still declares its whole move batch in one invocation per turn, unchanged cardinality. A *narrow*
+  variant (ringi enumerates the residual and asks one closed question per item, one invocation
+  each) remains a real, undesigned alternative; wire it to the Economy/Balanced/Assurance posture
+  rather than choosing globally, if it's ever pursued.
+- **Residual expansion — conditions only now:** dissents, risks, and (since `Motion` shipped)
+  questions are all real `Revision` residual items with stable ids and their own convergence
+  target category. Conditions remain the one category still dossier-level and transient relative
+  to the revision, evaluated by the separate isolated `ConditionEvaluator` mechanism — deliberately
+  out of `Motion`'s scope (see Settled Decisions above). Folding conditions into the same residual
+  model `Motion` now covers for the other three categories is the one piece of this old entry still
+  open.
 - **Executor consumer:** sandboxing, repository editing, verification commands, patch application,
   and any consumer of an approved archive require a separate change. They are not hidden inside
   this deliberation MVP.
