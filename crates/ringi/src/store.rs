@@ -88,7 +88,31 @@ impl SqliteRegistry {
         }
     }
 
+    /// Open a durable, file-backed registry and idempotently seed `pacts` (their dockets carry
+    /// the run id, so re-seeding the same run is a no-op). This is the backend `ringi run` drives
+    /// over — durable where the reference `MemoryRegistry` is not.
+    pub fn open_seeded(
+        path: impl AsRef<Path>,
+        pacts: Vec<Pact>,
+        lease_millis: u64,
+    ) -> Result<Self, StoreError> {
+        let registry = Self::open(path, lease_millis)?;
+        {
+            let conn = registry.conn.lock().expect("registry mutex not poisoned");
+            for pact in pacts {
+                conn.execute(
+                    "INSERT OR IGNORE INTO pacts (id, docket, kind, clause, state)
+                     VALUES (?, ?, ?, ?, 'available')",
+                    params![pact.id.to_string(), pact.docket, pact.kind, pact.clause],
+                )?;
+            }
+        }
+        Ok(registry)
+    }
+
     fn init(conn: &Connection) -> Result<(), StoreError> {
+        // The one user-scope DB holds both the Registry's lease/lifecycle state (`pacts`) and
+        // ringi's own domain (`runs`, `findings`), per the seam design in BACKLOG.md.
         conn.execute(
             "CREATE TABLE IF NOT EXISTS pacts (
                 id             TEXT PRIMARY KEY,
@@ -99,6 +123,24 @@ impl SqliteRegistry {
                 retainer       TEXT,
                 lease_expiry   INTEGER,
                 reclaimable_at INTEGER
+            )",
+            [],
+        )?;
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS runs (
+                run_id    TEXT PRIMARY KEY,
+                task      TEXT NOT NULL,
+                workspace TEXT NOT NULL,
+                state     TEXT NOT NULL,
+                rounds    INTEGER NOT NULL DEFAULT 0
+            )",
+            [],
+        )?;
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS findings (
+                run_id     TEXT NOT NULL,
+                finding_id TEXT NOT NULL,
+                PRIMARY KEY (run_id, finding_id)
             )",
             [],
         )?;
@@ -227,6 +269,148 @@ impl SqliteRegistry {
     }
 }
 
+/// The lifecycle state of a persisted run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunState {
+    /// Recorded but not yet driven to a terminal outcome — in progress, or interrupted.
+    Running,
+    /// The run converged.
+    Converged,
+    /// The run reached the round limit without converging.
+    Failed,
+}
+
+impl RunState {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Running => "running",
+            Self::Converged => "converged",
+            Self::Failed => "failed",
+        }
+    }
+
+    fn parse(s: &str) -> Self {
+        match s {
+            "converged" => Self::Converged,
+            "failed" => Self::Failed,
+            _ => Self::Running,
+        }
+    }
+}
+
+/// A persisted run's record, as read back from the store.
+#[derive(Debug, Clone)]
+pub struct RunRecord {
+    /// Stable identity of the run.
+    pub run_id: String,
+    /// The task the run was given.
+    pub task: String,
+    /// The workspace the run operated in.
+    pub workspace: String,
+    /// The run's lifecycle state.
+    pub state: RunState,
+    /// Rounds the loop ran (0 while still running).
+    pub rounds: usize,
+    /// Ids of findings still open at the terminal outcome.
+    pub open_findings: Vec<String>,
+}
+
+/// Ringi's durable domain store, over the **same** SQLite DB as the Registry: it records a run's
+/// identity and outcome so they survive the process. Recording is done here in the driver layer,
+/// never inside the composition root (`run-assembly` stays non-persisting). Kept on its own
+/// connection for now; unifying it with the Registry's connection onto one owner is a later
+/// refinement (see the change design).
+pub struct RunStore {
+    conn: Connection,
+}
+
+impl RunStore {
+    /// Open (and provision) the durable store at `path`. A `busy_timeout` guards against
+    /// incidental locking from the Registry's separate connection to the same file.
+    pub fn open(path: impl AsRef<Path>) -> Result<Self, StoreError> {
+        let conn = Connection::open(path)?;
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        SqliteRegistry::init(&conn)?;
+        Ok(Self { conn })
+    }
+
+    /// Record a run as started (state `running`), before its loop is driven.
+    pub fn create_run(&self, run_id: &str, task: &str, workspace: &str) -> Result<(), StoreError> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO runs (run_id, task, workspace, state, rounds)
+             VALUES (?, ?, ?, 'running', 0)",
+            params![run_id, task, workspace],
+        )?;
+        Ok(())
+    }
+
+    /// Record a run's terminal outcome and its open findings.
+    pub fn complete_run(
+        &self,
+        run_id: &str,
+        converged: bool,
+        rounds: usize,
+        open_findings: &[String],
+    ) -> Result<(), StoreError> {
+        let state = if converged {
+            RunState::Converged
+        } else {
+            RunState::Failed
+        };
+        self.conn.execute(
+            "UPDATE runs SET state = ?, rounds = ? WHERE run_id = ?",
+            params![
+                state.as_str(),
+                i64::try_from(rounds).unwrap_or(i64::MAX),
+                run_id
+            ],
+        )?;
+        for id in open_findings {
+            self.conn.execute(
+                "INSERT OR IGNORE INTO findings (run_id, finding_id) VALUES (?, ?)",
+                params![run_id, id],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Read a persisted run, or `None` if the id is unknown.
+    pub fn get_run(&self, run_id: &str) -> Result<Option<RunRecord>, StoreError> {
+        let row = self
+            .conn
+            .query_row(
+                "SELECT task, workspace, state, rounds FROM runs WHERE run_id = ?",
+                params![run_id],
+                |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, String>(2)?,
+                        r.get::<_, i64>(3)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let Some((task, workspace, state, rounds)) = row else {
+            return Ok(None);
+        };
+        let mut stmt = self
+            .conn
+            .prepare("SELECT finding_id FROM findings WHERE run_id = ? ORDER BY finding_id")?;
+        let open_findings = stmt
+            .query_map(params![run_id], |r| r.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Some(RunRecord {
+            run_id: run_id.to_string(),
+            task,
+            workspace,
+            state: RunState::parse(&state),
+            rounds: usize::try_from(rounds).unwrap_or(0),
+            open_findings,
+        }))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -272,6 +456,82 @@ mod tests {
             "a held pact must survive reopen and be reclaimable after its lease lapses"
         );
 
+        let _ = std::fs::remove_file(&path);
+    }
+
+    fn temp_db(tag: &str) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "ringi-runstore-{}-{tag}.sqlite",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        path
+    }
+
+    #[test]
+    fn a_completed_run_round_trips_across_reopen() {
+        let path = temp_db("complete");
+        {
+            let store = RunStore::open(&path).expect("open");
+            store.create_run("run-1", "do it", "/ws").expect("create");
+            store
+                .complete_run("run-1", true, 3, &["F1".to_string()])
+                .expect("complete");
+        }
+        // A fresh process (new connection) reads the persisted run — the store is the truth.
+        let reopened = RunStore::open(&path).expect("reopen");
+        let record = reopened.get_run("run-1").expect("query").expect("present");
+        assert_eq!(record.state, RunState::Converged);
+        assert_eq!(record.rounds, 3);
+        assert_eq!(record.task, "do it");
+        assert_eq!(record.open_findings, vec!["F1".to_string()]);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn an_interrupted_run_reads_as_running() {
+        let path = temp_db("interrupted");
+        {
+            let store = RunStore::open(&path).expect("open");
+            store.create_run("run-2", "t", "/ws").expect("create");
+            // No complete_run: the process "crashed" mid-run.
+        }
+        let reopened = RunStore::open(&path).expect("reopen");
+        let record = reopened.get_run("run-2").expect("query").expect("present");
+        assert_eq!(
+            record.state,
+            RunState::Running,
+            "an interrupted run is observably not-complete, never absent"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn an_unknown_run_id_is_none() {
+        let path = temp_db("unknown");
+        let store = RunStore::open(&path).expect("open");
+        assert!(
+            store.get_run("nope").expect("query").is_none(),
+            "an unknown run id is not found, never a fabricated record"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_failed_run_records_its_open_findings() {
+        let path = temp_db("failed");
+        let store = RunStore::open(&path).expect("open");
+        store.create_run("run-3", "t", "/ws").expect("create");
+        store
+            .complete_run("run-3", false, 16, &["F1".to_string(), "F2".to_string()])
+            .expect("complete");
+        let record = store.get_run("run-3").expect("query").expect("present");
+        assert_eq!(record.state, RunState::Failed);
+        assert_eq!(record.rounds, 16);
+        assert_eq!(
+            record.open_findings,
+            vec!["F1".to_string(), "F2".to_string()]
+        );
         let _ = std::fs::remove_file(&path);
     }
 }
