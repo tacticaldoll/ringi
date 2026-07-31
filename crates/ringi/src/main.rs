@@ -63,7 +63,8 @@ fn main() -> anyhow::Result<std::process::ExitCode> {
         }
         Command::Continue { id } => {
             let mut store = open_dossier_store()?;
-            ringi::dossier_cli::continue_command(&id, &mut store)
+            let registry = open_registry()?;
+            ringi::dossier_cli::continue_command(&id, &mut store, &registry)
                 .map(|()| std::process::ExitCode::SUCCESS)
         }
         Command::Inspect { id } => {
@@ -114,7 +115,8 @@ fn main() -> anyhow::Result<std::process::ExitCode> {
         }
         Command::Evaluate { id } => {
             let mut store = open_dossier_store()?;
-            ringi::dossier_cli::evaluate_command(&id, &mut store)
+            let registry = open_registry()?;
+            ringi::dossier_cli::evaluate_command(&id, &mut store, &registry)
                 .map(|()| std::process::ExitCode::SUCCESS)
         }
     }
@@ -133,6 +135,14 @@ fn open_dossier_store() -> anyhow::Result<ringi::store::DossierStore> {
     let store = ringi::store::DossierStore::open(&path)
         .with_context(|| format!("opening dossier store {}", path.display()))?;
     Ok(store)
+}
+
+/// Opens the pacta registry over the same file `open_dossier_store` uses — two connections to
+/// one file, each with its own busy timeout.
+fn open_registry() -> anyhow::Result<ringi::registry::SqliteRegistry> {
+    let path = store_path();
+    ringi::registry::SqliteRegistry::open(&path)
+        .with_context(|| format!("opening registry {}", path.display()))
 }
 
 /// Provision the durable store and scaffold the config, neither destroying existing data.

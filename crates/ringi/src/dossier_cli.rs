@@ -76,19 +76,27 @@ pub fn submit_command(id: &str, store: &mut DossierStore) -> anyhow::Result<()> 
     Ok(())
 }
 
-pub fn continue_command(id: &str, store: &mut DossierStore) -> anyhow::Result<()> {
+pub fn continue_command(
+    id: &str,
+    store: &mut DossierStore,
+    registry: &crate::registry::SqliteRegistry,
+) -> anyhow::Result<()> {
     let state_json = store
         .get_dossier_state(id)?
         .context("Dossier not found in store")?;
     // The Submitted -> Deliberating transition is owned by run_deliberation.
-    crate::deliberate_loop::run_deliberation(id, &state_json, store)
+    crate::deliberate_loop::run_deliberation(id, &state_json, store, registry)
 }
 
-pub fn evaluate_command(id: &str, store: &mut DossierStore) -> anyhow::Result<()> {
+pub fn evaluate_command(
+    id: &str,
+    store: &mut DossierStore,
+    registry: &crate::registry::SqliteRegistry,
+) -> anyhow::Result<()> {
     let state_json = store
         .get_dossier_state(id)?
         .context("Dossier not found in store")?;
-    crate::deliberate_loop::evaluate_conditions(id, &state_json, store)
+    crate::deliberate_loop::evaluate_conditions(id, &state_json, store, registry)
 }
 
 pub fn transition_command(
@@ -224,15 +232,13 @@ mod tests {
         path
     }
 
-    /// The process's current directory is global state. Any test that mutates it (because
-    /// `submit_command`/`transition_command` resolve dossier files relative to CWD) MUST hold
-    /// this lock for the duration, or it races with every other such test in this module.
-    static CWD_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    // Mutates the process's current directory for the duration of the test; see `CWD_LOCK`.
+    // Mutates the process's current directory for the duration of the test; see
+    // `crate::PROCESS_CWD_LOCK`.
     #[test]
     fn test_submit_computes_a_real_content_digest() {
-        let _guard = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = crate::PROCESS_CWD_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
 
         let dir = std::env::temp_dir().join(format!("ringi-submit-cli-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -261,10 +267,13 @@ mod tests {
         assert_eq!(revision.content_digest, revision.compute_digest());
     }
 
-    // Mutates the process's current directory for the duration of the test; see `CWD_LOCK`.
+    // Mutates the process's current directory for the duration of the test; see
+    // `crate::PROCESS_CWD_LOCK`.
     #[test]
     fn a_dossier_reaches_approved_once_evaluate_satisfies_its_only_condition() {
-        let _guard = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = crate::PROCESS_CWD_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
 
         let dir = std::env::temp_dir().join(format!("ringi-approve-cli-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -298,7 +307,9 @@ mod tests {
         };
         let json = serde_json::to_string(&dossier).unwrap();
 
-        let mut store = DossierStore::open(dir.join("store.sqlite")).unwrap();
+        let store_path = dir.join("store.sqlite");
+        let mut store = DossierStore::open(&store_path).unwrap();
+        let registry = crate::registry::SqliteRegistry::open(&store_path).unwrap();
         store.insert_dossier(&id_str, &json).unwrap();
         store
             .commit_successor_revision(
@@ -321,7 +332,7 @@ mod tests {
         let original_cwd = std::env::current_dir().unwrap();
         std::env::set_current_dir(&dir).unwrap();
         let result = (|| -> anyhow::Result<()> {
-            evaluate_command(&id_str, &mut store)?;
+            evaluate_command(&id_str, &mut store, &registry)?;
             transition_command(&id_str, LifecycleState::Approved, &mut store)
         })();
         std::env::set_current_dir(&original_cwd).unwrap();
