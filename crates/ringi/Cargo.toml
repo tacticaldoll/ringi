@@ -13,5 +13,9 @@ pacta-memory.workspace = true
 suunta.workspace = true
 shaahid.workspace = true
 uuid.workspace = true
+rusqlite.workspace = true
 clap.workspace = true
 anyhow.workspace = true
+
+[dev-dependencies]
+pacta-conformance.workspace = true
