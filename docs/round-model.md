@@ -85,11 +85,17 @@ about **attempts** (the work toward them). They are different layers and must no
   suunta's *distinctive* value, and it stays **dormant in a synchronous, settle-within-a-cycle
   loop.** It wakes only when an in-flight correction outlives a plan change.
 
-**Aligned shape: report in-flight to suunta from day one.** Even while v1 runs one agent at a
-time, a **pending-retry** attempt is a claimed-but-unsettled correction — it *is* in-flight.
-The loop must report it as a `CoverageFinding` so that when a new finding supersedes a
-pending target's work, suunta's `Supersedes` fires and the loop cancels the obsolete work. This
-is the one seam that lets Tooth 2 wake without full concurrency.
+**Corrected shape (was: "report in-flight from day one").** The original target claimed the
+loop should report pending-retry attempts as `CoverageFinding`s *from day one*, before the
+Reviewer exists. Reading suunta's actual coverage contract refutes the "day one" part: in a
+synchronous, fixed-target loop there is nothing for coverage to do. `CoverageEffect::Covers`
+omits a target from the residual **and does not surface it**, so covering a still-pending retry
+makes `is_converged` true while the retry is outstanding — premature convergence that silently
+drops the retry. And `Supersedes`/`Conflicts` only arise when the plan changes, which requires
+a changing target set — i.e. **findings-as-targets (the Reviewer)**. So in-flight reporting has
+no honest teeth until the target set can change: it lands **with/after** the Reviewer, not
+before. The ② insight itself stands — suunta governs targets, identity governs attempts, and a
+pending-retry *is* in-flight; only the sequencing ("day one, before findings") was wrong.
 
 **Honest fidelity note.** If ringi were to stay forever strictly synchronous *and* never report
 in-flight, we would have chosen suunta for a value that never fires — a fidelity failure we
@@ -144,6 +150,39 @@ less.*
 
 ---
 
+## Why this is not mirrorlane redux — bounded-context DDD, with the repo as the boundary
+
+A grounding correction, so the "mirrorlane redux" red lines above are not misread.
+`../mirrorlane`'s runtime *spine* was clean: a tiny, generic, domain-free `Step` + a
+`Cached<S>: Step` decorator, with a standing genericity guard. **The Step/middleware/Tower
+abstraction was not the disease — do not strawman it.**
+
+mirrorlane died of **single-bounded-context domain-driven design**. One semantic frame
+(runtime + strategy) was made to carry an unbounded owned domain — projection, skills, experts,
+routing, providers — until it collapsed into a god crate. A god crate is precisely the symptom
+that *one context's language cannot support the whole problem*.
+
+The family's answer is not the negation of domain-driven design; it is its **mature form**:
+
+- each brick is a **bounded context** — pacta (contract), suunta (navigation), shaahid
+  (witness) — its register (see `docs/naming.md`) the *ubiquitous language*;
+- the **seam** (`reconcile::seam`) is the *anti-corruption layer* / context map;
+- the **repo is the boundary.** A module boundary inside one crate erodes (semantic drift
+  precedes architectural drift); a separate published artifact is a *physical* boundary that
+  cannot be reached across except through its API. "Compose, do not reimplement" is
+  bounded-context DDD enforced by repo separation.
+
+So **"mirrorlane redux" means re-collapsing mechanics into a single owned context** — not
+"building an abstraction." The guard: mechanics live in *external, repo-bounded* bricks that
+ringi composes; ringi owns only its own thin context (the Agent-CLI domain + the loop). And the
+contexts are found by **force-then-extract**, never guessed — mirrorlane's fatal move was
+guessing one context boundary (too big) up front.
+
+The red line is therefore **not** "avoid domain modeling." It is: model via bounded contexts;
+cut a new context only at a forced seam; keep ringi's own context thin. When a rich, cohesive
+sub-domain appears (e.g. a review/critique domain), that is a candidate *repo to extract*, never
+a rich model to grow inside ringi.
+
 ## Family-level outputs of this audit (BACKLOG sync)
 
 - **Feedback to the family: none for identity.** The attempt-grain fits shaahid unchanged; the
@@ -157,16 +196,25 @@ less.*
 
 ## The first increment (smallest step toward this target)
 
-Not "build the round loop." The smallest aligned step is **the in-flight seam** (② ), because it
-is upstream of disposition and it is what keeps the suunta choice honest:
+Not "build the round loop." And — corrected from an earlier draft — **not the in-flight seam
+either**. The in-flight seam has no honest teeth in a synchronous, fixed-target loop (see ②):
+covering a pending-retry with `Covers` prematurely converges, and nothing supersedes until the
+plan can change. The smallest aligned step is therefore the thing that *makes the plan change*:
 
-1. The reconcile loop reports **pending-retry** attempts to suunta as `CoverageFinding`s, and
-   acts on `Supersedes`/`Conflicts` by cancelling the obsolete pending work.
-2. Acceptance: a step pending retry, when a new target supersedes it, is cancelled via suunta's
-   coverage rather than run to completion — Tooth 2 fires in a single-line loop.
+1. **The Reviewer runner + findings-as-targets** (①/②). A Builder attempt produces a diff; a
+   Reviewer attempt produces findings; each open finding becomes a suunta target ("resolve F1"),
+   Unsatisfied until an attempt resolves it and a re-review certifies it Satisfied. This turns
+   "reconcile a fixed step set" into "converge on a goal via review findings" — and it is what
+   first gives coverage a changing target set to reason about.
 
-Then the Reviewer runner + findings-as-targets (①/②), then the first retry Layer (③) — each a
-separate change, each a step toward this target.
+Then **the in-flight seam** (②) — now with a real trigger: a pending-retry attempt reported as
+in-flight, cancelled via suunta's `Supersedes` when a new finding supersedes its target. Then
+**the first retry Layer** (③). Each a separate change, each a step toward this target.
+
+> **Provenance.** The in-flight-seam-first ordering was proposed and started as its own change
+> (`report-in-flight-coverage`), then shelved at apply time when the `Covers` premature-
+> convergence above surfaced. The re-sequencing here is that discovery, recorded so it is not
+> re-litigated.
 
 ---
 
