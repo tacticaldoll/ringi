@@ -19,10 +19,14 @@ family primitives only where they honestly own a mechanic:
 ```text
 durable invocation lifecycle + recovery -> pacta
 residual over open questions and risks  -> suunta
-exactly-once invocation recovery        -> shaahid
+atomic batch-fold validation of a Move  -> cadw
 roles, dossier projections, provenance,
 human decisions, and archive            -> ringi
 ```
+
+Exactly-once invocation recovery (shaahid) was assessed and declined: `InvocationCoordinate`'s
+own content-derived identity already closes the identity/content-drift gap shaahid exists to
+fill, so there is no gap left for it to close — see `BACKLOG.md`'s Family Dependency Stance.
 
 The application MUST NOT recreate lifecycle, convergence, or idempotency mechanisms. It also MUST
 NOT grow a provider layer, prompt-template platform, generic policy DSL, central framework, or
@@ -50,8 +54,10 @@ downstream executor.
 ## Terminology
 
 `Dossier`, `Draft`, `Revision`, `Respondent`, `Arbitrator`, `Evaluator`, `Dissent`, `Risk`,
-`Condition`, `Decision`, `Archive`, and `Controller` are ringi's native terms. Family terms remain
-only at thin seams: `Pact`/`Registry`, `Bearing`/`Course`, and `Deed`/`witness`.
+`Question`, `Condition`, `Move`, `Decision`, `Archive`, and `Controller` are ringi's native
+terms. Family terms remain only at thin seams: `Pact`/`Registry` (pacta, via `registry`),
+`Bearing`/`Course` (suunta, via `convergence`), and `TargetId`/`Ledger`/`Validator`/`Rejection`
+(cadw, via `residual_ledger`).
 
 ## Non-Goals
 

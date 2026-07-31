@@ -5,7 +5,7 @@ Meta-guideline for any agent working in this repository. Read this first, then
 
 ## What ringi is (and how it is governed)
 
-Ringi is an **application** — a family *leaf* that composes pacta / suunta / shaahid, not a
+Ringi is an **application** — a family *leaf* that composes pacta / suunta / cadw, not a
 sans-I/O library brick. So it is governed as an app: a Definition of Done, security tests,
 and one discipline unique to ringi — **compose, do not reimplement**. There are no sans-I/O
 teeth here; ringi does I/O (subprocess, filesystem, SQLite) by design.
@@ -49,8 +49,8 @@ secret or escape the workspace boundary?
 - Treat `openspec/specs/` as truth; reflect requirement changes there via sync, not silent
   code edits.
 - **Compose, do not reimplement.** If a change grows a `Run`/`Step` engine, a completion
-  calculation, or an idempotency scheme that duplicates pacta/suunta/shaahid, stop — that is
-  the monolith returning.
+  calculation, or a batch-fold/convergence scheme that duplicates pacta/suunta/cadw, stop — that
+  is the monolith returning.
 
 ## Language
 
