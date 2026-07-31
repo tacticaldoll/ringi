@@ -7,8 +7,8 @@
 //! crash-recovery, so neither loop repeats that checkpoint inline.
 //!
 //! Neither loop authors SSOT content itself: `run_deliberation` applies the arbitrator's
-//! proposed successor through `Revision::propose_successor` (via `deliberation::
-//! apply_arbitration`), and readiness is never an agent claim.
+//! declared move batch through `Revision::apply_moves` (via `deliberation::apply_arbitration`),
+//! and readiness is never an agent claim.
 
 use anyhow::{Context, bail};
 use std::collections::HashMap;
@@ -214,14 +214,14 @@ pub fn run_deliberation(
         };
 
         println!("Turn {}: Invoking arbitrator...", turn);
-        // Applying arbitration (propose_successor's dissent/risk retention and original_proposal
-        // immutability checks) happens *inside* the claim boundary: a response that parses fine
-        // but fails that domain validation is just as unusable as a malformed one, and must
-        // release the claim for retry, not settle it fulfilled.
-        let (mut successor, _next_questions) = claimed_invoke(
+        // Applying arbitration (apply_moves's per-move validation and atomic batch application)
+        // happens *inside* the claim boundary: a response that parses fine but fails that domain
+        // validation is just as unusable as a malformed one, and must release the claim for
+        // retry, not settle it fulfilled.
+        let successor = claimed_invoke(
             registry,
             &arbitrator_coordinate,
-            || -> anyhow::Result<Settlement<(crate::revision::Revision, Vec<String>)>> {
+            || -> anyhow::Result<Settlement<crate::revision::Revision>> {
                 let res = arbitrator.run(arb_agent_req)?;
                 if res.exit_code != Some(0) {
                     bail!("Arbitrator failed: {}", res.stderr);
@@ -236,8 +236,6 @@ pub fn run_deliberation(
                 Ok(Settlement::Fulfilled(applied))
             },
         )?;
-
-        successor.revision_id = Uuid::new_v4();
 
         // The respondent's event is already durably persisted (either just now, or recovered
         // from a prior attempt) — nothing further to commit alongside the successor.
@@ -484,6 +482,7 @@ mod tests {
             positions: vec![],
             dissents: vec![],
             risks: vec![],
+            questions: vec![],
         };
         store
             .commit_successor_revision(&id_str, None, &converged, &[])
@@ -508,14 +507,9 @@ mod tests {
         let id_str = id.to_string();
 
         // The un-deliberated root has an empty residual but must NOT short-circuit to ready.
-        // A turn runs; the arbitrator returns an empty successor, which then converges.
+        // A turn runs; the arbitrator declares an empty move batch, which then converges.
         let respondent = fake_agent("resp2.sh", "echo 'nothing to add'");
-        let successor_json = format!(
-            "{{\"successor_revision\":{{\"revision_id\":\"{rev}\",\"parent_digest\":null,\
-             \"content_digest\":\"d\",\"original_proposal\":\"p\",\"current_understanding\":\"deliberated\",\
-             \"positions\":[],\"dissents\":[],\"risks\":[]}},\"next_questions\":[]}}",
-            rev = Uuid::new_v4(),
-        );
+        let successor_json = "{\"current_understanding\":\"deliberated\",\"moves\":[]}";
         let arbitrator = fake_agent("arb2.sh", &format!("echo '{successor_json}'"));
 
         let mut store = DossierStore::open(&path).unwrap();
@@ -538,6 +532,7 @@ mod tests {
             positions: vec![],
             dissents: vec![],
             risks: vec![],
+            questions: vec![],
         };
         store
             .commit_successor_revision(&id_str, None, &initial, &[])
@@ -565,17 +560,11 @@ mod tests {
         let id_str = id.to_string();
         let dissent_id = Uuid::new_v4();
 
-        // The arbitrator emits exactly one line of compact JSON (the stopgap contract),
-        // carrying the still-unresolved dissent forward, so the dossier does not converge.
+        // The arbitrator emits exactly one line of compact JSON (the transport contract), with
+        // an empty move batch — the still-unresolved dissent carries forward since no move
+        // targets it, so the dossier does not converge.
         let respondent = fake_agent("resp.sh", "echo 'I propose we proceed.'");
-        let successor_json = format!(
-            "{{\"successor_revision\":{{\"revision_id\":\"{rev}\",\"parent_digest\":null,\
-             \"content_digest\":\"d\",\"original_proposal\":\"p\",\"current_understanding\":\"u2\",\
-             \"positions\":[],\"dissents\":[{{\"id\":\"{did}\",\"claim\":\"c\",\"resolved_by\":null}}],\
-             \"risks\":[]}},\"next_questions\":[]}}",
-            rev = Uuid::new_v4(),
-            did = dissent_id,
-        );
+        let successor_json = "{\"current_understanding\":\"u2\",\"moves\":[]}";
         let arbitrator = fake_agent("arb.sh", &format!("echo '{successor_json}'"));
 
         let mut store = DossierStore::open(&path).unwrap();
@@ -602,6 +591,7 @@ mod tests {
                 resolved_by: None,
             }],
             risks: vec![],
+            questions: vec![],
         };
         store
             .commit_successor_revision(&id_str, None, &initial, &[])
@@ -651,6 +641,7 @@ mod tests {
             positions: vec![],
             dissents: vec![],
             risks: vec![],
+            questions: vec![],
         };
         store
             .commit_successor_revision(&id_str, None, &initial, &[])
@@ -722,6 +713,7 @@ mod tests {
             positions: vec![],
             dissents: vec![],
             risks: vec![],
+            questions: vec![],
         };
         store
             .commit_successor_revision(&id_str, None, &initial, &[])
@@ -750,9 +742,10 @@ mod tests {
 
     #[test]
     fn a_domain_invalid_arbitrator_response_releases_the_claim_not_fulfills_it() {
-        // Structurally valid JSON, but propose_successor rejects it (changed original_proposal):
-        // apply_arbitration's validation must be inside the claim boundary too, not just the
-        // parse — a response that parses fine but fails domain validation is just as unusable.
+        // Structurally valid JSON, but apply_moves rejects it (the move targets a dissent that
+        // does not exist): apply_arbitration's validation must be inside the claim boundary too,
+        // not just the parse — a response that parses fine but fails domain validation is just
+        // as unusable.
         let _guard = crate::PROCESS_CWD_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
@@ -767,10 +760,10 @@ mod tests {
         let id_str = id.to_string();
 
         let respondent = fake_agent("resp-ok2.sh", "echo 'looks fine'");
-        // Valid JSON, but its original_proposal differs from the parent's.
+        // Valid JSON, but the move targets a dissent id that does not exist on the revision.
         let arbitrator = fake_agent(
-            "arb-changed-proposal.sh",
-            r#"echo '{"successor_revision":{"revision_id":"22222222-2222-2222-2222-222222222222","parent_digest":null,"content_digest":"x","original_proposal":"a different proposal","current_understanding":"u","positions":[],"dissents":[],"risks":[]},"next_questions":[]}'"#,
+            "arb-bad-target.sh",
+            r#"echo '{"current_understanding":"u","moves":[{"kind":"ResolveDissent","id":"22222222-2222-2222-2222-222222222222","resolution":{"reason":"r","provenance":[{"event_id":"33333333-3333-3333-3333-333333333333"}]}}]}'"#,
         );
 
         let mut store = DossierStore::open(&path).unwrap();
@@ -793,6 +786,7 @@ mod tests {
             positions: vec![],
             dissents: vec![],
             risks: vec![],
+            questions: vec![],
         };
         store
             .commit_successor_revision(&id_str, None, &initial, &[])
@@ -801,7 +795,7 @@ mod tests {
         let err = run_deliberation(&id_str, &json, &mut store, &registry).unwrap_err();
         assert!(
             err.to_string()
-                .contains("original_proposal cannot change across a successor revision")
+                .contains("Move targets a dissent that does not exist")
         );
 
         // The arbitrator's claim must have been released, not fulfilled, even though its
@@ -853,7 +847,7 @@ mod tests {
             "arb-toggle.sh",
             &format!(
                 "if [ -f '{}' ]; then \
-                   echo '{{\"successor_revision\":{{\"revision_id\":\"11111111-1111-1111-1111-111111111111\",\"parent_digest\":null,\"content_digest\":\"placeholder\",\"original_proposal\":\"p\",\"current_understanding\":\"u2\",\"positions\":[],\"dissents\":[],\"risks\":[]}},\"next_questions\":[]}}'; \
+                   echo '{{\"current_understanding\":\"u2\",\"moves\":[]}}'; \
                  else \
                    echo 'not json at all'; \
                  fi",
@@ -881,6 +875,7 @@ mod tests {
             positions: vec![],
             dissents: vec![],
             risks: vec![],
+            questions: vec![],
         };
         store
             .commit_successor_revision(&id_str, None, &initial, &[])
@@ -922,6 +917,7 @@ mod tests {
             positions: vec![],
             dissents: vec![],
             risks: vec![],
+            questions: vec![],
         }
     }
 

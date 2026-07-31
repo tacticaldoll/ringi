@@ -4,15 +4,15 @@
 //! `Condition` in isolation; none reads the raw event log (see `event.rs`'s
 //! `RespondentContextProjection` note on why that currently suffices for the sealed-evaluation
 //! invariant). `apply_arbitration` is the seam between an agent's raw structured output and the
-//! validated successor: it delegates the actual acceptance decision to
-//! `Revision::propose_successor` rather than re-deciding it here.
+//! validated successor: it delegates the actual acceptance decision to `Revision::apply_moves`
+//! rather than re-deciding it here.
 
 use crate::dossier::Condition;
-use crate::revision::Revision;
+use crate::revision::{Move, Revision};
 
 /// Build the prompt for a respondent agent.
 /// It contains the original proposal, current public revision state (understanding, positions),
-/// unresolved items (dissents, risks), and the specific question to answer.
+/// unresolved items (dissents, risks, questions), and the specific question to answer.
 pub fn build_respondent_prompt(question: &str, revision: &Revision) -> String {
     let mut prompt = String::new();
     prompt.push_str("You are a respondent in a deliberation process.\n\n");
@@ -53,6 +53,18 @@ pub fn build_respondent_prompt(question: &str, revision: &Revision) -> String {
         }
     }
 
+    let open_questions: Vec<_> = revision
+        .questions
+        .iter()
+        .filter(|q| q.answered_by.is_none())
+        .collect();
+    if !open_questions.is_empty() {
+        prompt.push_str("\n## Open Questions\n");
+        for q in open_questions {
+            prompt.push_str(&format!("- {}\n", q.text));
+        }
+    }
+
     prompt.push_str("\n## Question for you\n");
     prompt.push_str(question);
     prompt.push_str("\n\nPlease provide your answer.");
@@ -60,36 +72,73 @@ pub fn build_respondent_prompt(question: &str, revision: &Revision) -> String {
     prompt
 }
 
-/// The structured output expected from an arbitration session.
+/// The structured output expected from an arbitration turn: the freely-authored narrative
+/// summary plus a batch of discrete moves on the residual — never a whole successor revision
+/// (see `revision.rs`'s `Move`).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ArbitrationOutput {
-    /// A complete successor SSOT revision replacing the previous.
-    pub successor_revision: Revision,
-    /// A list of zero or more specific questions for respondents.
-    pub next_questions: Vec<String>,
+    pub current_understanding: String,
+    pub moves: Vec<Move>,
 }
 
 /// Applies an arbitration output to a base revision, enforcing structural validity.
-/// Returns the new successor revision and the next questions. Readiness is NOT an output
-/// here: it is computed mechanically from the residual by the `convergence` seam.
+/// Returns the new successor revision. Readiness is NOT an output here: it is computed
+/// mechanically from the residual by the `convergence` seam.
 pub fn apply_arbitration(
     base: &Revision,
     output: ArbitrationOutput,
-) -> Result<(Revision, Vec<String>), &'static str> {
-    let successor = output.successor_revision;
-    let validated_successor = base.propose_successor(successor)?;
-    Ok((validated_successor, output.next_questions))
+) -> Result<Revision, &'static str> {
+    base.apply_moves(output.current_understanding, output.moves)
 }
 
 /// Build the prompt for an arbitrator agent.
-/// It contains the full history (simplified as the current revision for now),
-/// unresolved items, and recent respondent claims (passed as events).
+/// It contains the full history (simplified as the current revision for now), unresolved items
+/// with their stable ids (a `Move` targets an existing item by id, and ringi — not the agent —
+/// mints ids for newly-created risks/questions, so the arbitrator has no way to target an item
+/// again in a later turn unless its id is shown here), and recent respondent claims (passed as
+/// events).
 pub fn build_arbitrator_prompt(revision: &Revision, recent_claims: &[String]) -> String {
     let mut prompt = String::new();
     prompt.push_str("You are the arbitrator.\n\n");
     prompt.push_str("## Current SSOT\n");
     prompt.push_str(&revision.current_understanding);
     prompt.push('\n');
+
+    let unresolved_dissents: Vec<_> = revision
+        .dissents
+        .iter()
+        .filter(|d| d.resolved_by.is_none())
+        .collect();
+    if !unresolved_dissents.is_empty() {
+        prompt.push_str("\n## Unresolved Dissents\n");
+        for d in unresolved_dissents {
+            prompt.push_str(&format!("- [{}] {}\n", d.id, d.claim));
+        }
+    }
+
+    let unresolved_risks: Vec<_> = revision
+        .risks
+        .iter()
+        .filter(|r| r.resolved_by.is_none())
+        .collect();
+    if !unresolved_risks.is_empty() {
+        prompt.push_str("\n## Unresolved Risks\n");
+        for r in unresolved_risks {
+            prompt.push_str(&format!("- [{}] {}\n", r.id, r.description));
+        }
+    }
+
+    let open_questions: Vec<_> = revision
+        .questions
+        .iter()
+        .filter(|q| q.answered_by.is_none())
+        .collect();
+    if !open_questions.is_empty() {
+        prompt.push_str("\n## Open Questions\n");
+        for q in open_questions {
+            prompt.push_str(&format!("- [{}] {}\n", q.id, q.text));
+        }
+    }
 
     if !recent_claims.is_empty() {
         prompt.push_str("\n## Recent Respondent Claims\n");
@@ -98,16 +147,21 @@ pub fn build_arbitrator_prompt(revision: &Revision, recent_claims: &[String]) ->
         }
     }
 
-    prompt.push_str("\nPlease propose a complete successor revision and next questions.");
-    // TEMPORARY STOPGAP — owned by, and to be deleted with, the future `Motion` slice.
-    // The transport (`agent::parse_metadata`) scans stdout lines in reverse for a single
-    // line that parses as JSON, so the arbitrator must emit its structured output as
-    // exactly one line of compact JSON. This keeps the loop runnable until `Motion`
-    // replaces whole-successor authorship with declared moves.
+    prompt.push_str(
+        "\nPlease provide an updated narrative understanding, and declare zero or more moves on \
+         the residual: resolve a dissent, add or close a risk, ask a question, or answer a \
+         question. Do not restate items you are not acting on — silence leaves them exactly as \
+         they are.",
+    );
+    // The transport (`agent::parse_metadata`) scans stdout lines in reverse for a single line
+    // that parses as JSON, so the arbitrator must emit its structured output as exactly one line
+    // of compact JSON — a permanent transport constraint, independent of what that JSON contains.
     prompt.push_str(
         "\n\nEnd your reply with exactly one line of compact JSON (no surrounding prose, \
-         no pretty-printing) of the form: \
-         {\"successor_revision\": {...}, \"next_questions\": [...]}",
+         no pretty-printing) of the form: {\"current_understanding\": \"...\", \"moves\": \
+         [{\"kind\": \"ResolveDissent\", \"id\": \"...\", \"resolution\": {\"reason\": \"...\", \
+         \"provenance\": [{\"event_id\": \"...\"}]}}, ...]} — each move's \"kind\" is one of \
+         ResolveDissent, AddRisk, CloseRisk, AskQuestion, AnswerQuestion.",
     );
     prompt
 }
@@ -208,7 +262,7 @@ pub fn build_condition_evaluator_prompt(condition: &Condition, revision: &Revisi
 mod tests {
     use super::*;
     use crate::event::{Event, EventPayload, EventVisibility};
-    use crate::revision::{Digest, Dissent};
+    use crate::revision::{Digest, Dissent, EventRef, Resolution};
     use uuid::Uuid;
 
     #[test]
@@ -222,6 +276,7 @@ mod tests {
             positions: vec![],
             dissents: vec![],
             risks: vec![],
+            questions: vec![],
         };
         let first = Condition {
             id: Uuid::new_v4(),
@@ -237,6 +292,44 @@ mod tests {
         let prompt = build_condition_evaluator_prompt(&first, &revision);
         assert!(prompt.contains(&first.description));
         assert!(!prompt.contains(&second.description));
+    }
+
+    #[test]
+    fn arbitrator_prompt_shows_stable_ids_for_unresolved_items() {
+        // A Move targets an existing item by id, and ringi (not the agent) mints ids for newly
+        // created risks/questions — so the arbitrator prompt must show each item's id, or the
+        // arbitrator would have no way to target it again in a later turn.
+        let dissent_id = Uuid::new_v4();
+        let risk_id = Uuid::new_v4();
+        let question_id = Uuid::new_v4();
+        let revision = Revision {
+            revision_id: Uuid::new_v4(),
+            parent_digest: None,
+            content_digest: Digest("dig".into()),
+            original_proposal: "Plan".into(),
+            current_understanding: "Plan".into(),
+            positions: vec![],
+            dissents: vec![Dissent {
+                id: dissent_id,
+                claim: "Too slow".into(),
+                resolved_by: None,
+            }],
+            risks: vec![crate::revision::Risk {
+                id: risk_id,
+                description: "Overheating".into(),
+                resolved_by: None,
+            }],
+            questions: vec![crate::revision::Question {
+                id: question_id,
+                text: "Which supplier?".into(),
+                answered_by: None,
+            }],
+        };
+
+        let prompt = build_arbitrator_prompt(&revision, &[]);
+        assert!(prompt.contains(&dissent_id.to_string()));
+        assert!(prompt.contains(&risk_id.to_string()));
+        assert!(prompt.contains(&question_id.to_string()));
     }
 
     #[test]
@@ -278,6 +371,21 @@ mod tests {
                     }),
                 },
             ],
+            questions: vec![
+                crate::revision::Question {
+                    id: Uuid::new_v4(),
+                    text: "Which engine supplier?".into(),
+                    answered_by: None,
+                },
+                crate::revision::Question {
+                    id: Uuid::new_v4(),
+                    text: "Launch site?".into(),
+                    answered_by: Some(crate::revision::Resolution {
+                        reason: "Cape Canaveral".into(),
+                        provenance: vec![],
+                    }),
+                },
+            ],
         };
 
         let prompt = build_respondent_prompt("What fuel to use?", &revision);
@@ -287,6 +395,8 @@ mod tests {
         assert!(!prompt.contains("Too far")); // resolved should not be included
         assert!(prompt.contains("Aliens"));
         assert!(!prompt.contains("Solar flare")); // resolved risk should not be included
+        assert!(prompt.contains("Which engine supplier?"));
+        assert!(!prompt.contains("Launch site?")); // answered question should not be included
         assert!(prompt.contains("What fuel to use?"));
     }
 
@@ -305,7 +415,8 @@ mod tests {
     }
 
     #[test]
-    fn arbitrator_parses_and_validates_proposal() {
+    fn arbitrator_move_missing_provenance_is_rejected() {
+        let dissent_id = Uuid::new_v4();
         let base = Revision {
             revision_id: Uuid::new_v4(),
             parent_digest: None,
@@ -314,34 +425,80 @@ mod tests {
             current_understanding: "Plan".into(),
             positions: vec![],
             dissents: vec![Dissent {
-                id: Uuid::new_v4(),
+                id: dissent_id,
                 claim: "No".into(),
                 resolved_by: None,
             }],
             risks: vec![],
+            questions: vec![],
         };
 
-        // Missing dissent resolution
+        // A move resolving the dissent, but with no event provenance.
         let output = ArbitrationOutput {
-            successor_revision: Revision {
-                revision_id: Uuid::new_v4(),
-                parent_digest: None,
-                content_digest: Digest("".into()),
-                original_proposal: "Plan".into(),
-                current_understanding: "Plan".into(),
-                positions: vec![],
-                dissents: vec![], // Dropped dissent!
-                risks: vec![],
-            },
-            next_questions: vec![],
+            current_understanding: "Plan".into(),
+            moves: vec![crate::revision::Move::ResolveDissent {
+                id: dissent_id,
+                resolution: Resolution {
+                    reason: "Tested".into(),
+                    provenance: vec![],
+                },
+            }],
         };
 
         let result = apply_arbitration(&base, output);
-        assert!(result.is_err());
         assert_eq!(
             result.unwrap_err(),
-            "Cannot silently remove an unresolved dissent"
+            "Dissent resolution requires event provenance"
         );
+    }
+
+    #[test]
+    fn arbitrator_move_batch_applies_and_leaves_untouched_items_unchanged() {
+        let dissent_id = Uuid::new_v4();
+        let untouched_risk_id = Uuid::new_v4();
+        let base = Revision {
+            revision_id: Uuid::new_v4(),
+            parent_digest: None,
+            content_digest: Digest("dig".into()),
+            original_proposal: "Plan".into(),
+            current_understanding: "Plan".into(),
+            positions: vec![],
+            dissents: vec![Dissent {
+                id: dissent_id,
+                claim: "No".into(),
+                resolved_by: None,
+            }],
+            risks: vec![crate::revision::Risk {
+                id: untouched_risk_id,
+                description: "Untouched risk".into(),
+                resolved_by: None,
+            }],
+            questions: vec![],
+        };
+
+        let output = ArbitrationOutput {
+            current_understanding: "Updated".into(),
+            moves: vec![crate::revision::Move::ResolveDissent {
+                id: dissent_id,
+                resolution: Resolution {
+                    reason: "Tested".into(),
+                    provenance: vec![EventRef {
+                        event_id: Uuid::new_v4(),
+                    }],
+                },
+            }],
+        };
+
+        let successor = apply_arbitration(&base, output).expect("valid move batch applies");
+        assert!(successor.dissents[0].resolved_by.is_some());
+        // The risk had no move targeting it — it must survive completely unchanged, not
+        // inferred as removed or altered.
+        assert_eq!(successor.risks[0].id, untouched_risk_id);
+        assert!(successor.risks[0].resolved_by.is_none());
+        // original_proposal is carried forward unconditionally — there is no field through
+        // which the agent could have supplied or altered it.
+        assert_eq!(successor.original_proposal, "Plan");
+        assert_eq!(successor.current_understanding, "Updated");
     }
 
     #[test]
@@ -373,6 +530,7 @@ mod tests {
             positions: vec![],
             dissents: vec![],
             risks: vec![],
+            questions: vec![],
         };
 
         let prompt = build_respondent_prompt("Question", &base);

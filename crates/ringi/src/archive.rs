@@ -162,6 +162,7 @@ mod tests {
             positions: vec![],
             dissents: vec![],
             risks: vec![],
+            questions: vec![],
         }
     }
 

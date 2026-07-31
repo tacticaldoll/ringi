@@ -115,6 +115,27 @@ pub fn init(conn: &Connection) -> Result<(), StoreError> {
             )",
         [],
     )?;
+    // A question mirrors a risk: carried forward across revisions, its logical id unique only
+    // within a revision.
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS questions (
+                id              TEXT NOT NULL,
+                revision_id     TEXT NOT NULL,
+                text            TEXT NOT NULL,
+                resolved_reason TEXT,
+                PRIMARY KEY (id, revision_id)
+            )",
+        [],
+    )?;
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS question_resolution_provenance (
+                question_id TEXT NOT NULL,
+                revision_id TEXT NOT NULL,
+                event_id    TEXT NOT NULL,
+                PRIMARY KEY (question_id, revision_id, event_id)
+            )",
+        [],
+    )?;
     Ok(())
 }
 
@@ -485,6 +506,46 @@ impl DossierStore {
             });
         }
 
+        let mut questions_stmt = self
+            .conn
+            .prepare("SELECT id, text, resolved_reason FROM questions WHERE revision_id = ?")?;
+        let questions_iter = questions_stmt.query_map(params![&id_str], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
+        })?;
+
+        let mut questions = Vec::new();
+        for question_res in questions_iter {
+            let (q_id, text, resolved_reason) = question_res?;
+            let question_uuid = Uuid::parse_str(&q_id).unwrap_or_default();
+
+            let answered_by = if let Some(reason) = resolved_reason {
+                let mut prov_stmt = self.conn.prepare(
+                    "SELECT event_id FROM question_resolution_provenance WHERE question_id = ? AND revision_id = ?",
+                )?;
+                let prov_iter =
+                    prov_stmt.query_map(params![&q_id, &id_str], |row| row.get::<_, String>(0))?;
+                let mut provenance = Vec::new();
+                for p_res in prov_iter {
+                    provenance.push(crate::revision::EventRef {
+                        event_id: Uuid::parse_str(&p_res?).unwrap_or_default(),
+                    });
+                }
+                Some(crate::revision::Resolution { reason, provenance })
+            } else {
+                None
+            };
+
+            questions.push(crate::revision::Question {
+                id: question_uuid,
+                text,
+                answered_by,
+            });
+        }
+
         Ok(Some(crate::revision::Revision {
             revision_id,
             parent_digest: parent_digest.map(crate::revision::Digest),
@@ -494,6 +555,7 @@ impl DossierStore {
             positions: vec![],
             dissents,
             risks,
+            questions,
         }))
     }
 
@@ -581,6 +643,24 @@ impl DossierStore {
                 }
             }
         }
+        for question in &new_revision.questions {
+            if let Some(res) = &question.answered_by {
+                for prov in &res.provenance {
+                    let event_id_str = prov.event_id.to_string();
+                    let count: i64 = tx.query_row(
+                        "SELECT COUNT(1) FROM events WHERE id = ?",
+                        params![event_id_str],
+                        |r| r.get(0),
+                    )?;
+                    if count == 0 {
+                        return Err(StoreError::CorruptState(format!(
+                            "Broken event reference in question answer: {}",
+                            event_id_str
+                        )));
+                    }
+                }
+            }
+        }
 
         // 4. Insert revision
         tx.execute(
@@ -651,6 +731,34 @@ impl DossierStore {
         }
         drop(stmt_risks);
         drop(stmt_risk_prov);
+
+        // 7. Insert questions and their answer provenance (mirrors risks)
+        let mut stmt_questions = tx.prepare(
+            "INSERT INTO questions (id, revision_id, text, resolved_reason) VALUES (?, ?, ?, ?)",
+        )?;
+        let mut stmt_question_prov = tx.prepare(
+            "INSERT INTO question_resolution_provenance (question_id, revision_id, event_id) VALUES (?, ?, ?)",
+        )?;
+        for question in &new_revision.questions {
+            let reason = question.answered_by.as_ref().map(|r| r.reason.as_str());
+            stmt_questions.execute(params![
+                question.id.to_string(),
+                new_revision.revision_id.to_string(),
+                question.text,
+                reason
+            ])?;
+            if let Some(res) = &question.answered_by {
+                for prov in &res.provenance {
+                    stmt_question_prov.execute(params![
+                        question.id.to_string(),
+                        new_revision.revision_id.to_string(),
+                        prov.event_id.to_string()
+                    ])?;
+                }
+            }
+        }
+        drop(stmt_questions);
+        drop(stmt_question_prov);
 
         tx.commit()?;
         Ok(())
@@ -793,6 +901,7 @@ mod tests {
                 positions: vec![],
                 dissents: vec![],
                 risks: vec![],
+                questions: vec![],
             };
 
             let result = store.commit_successor_revision(
@@ -829,6 +938,7 @@ mod tests {
                 positions: vec![],
                 dissents: vec![],
                 risks: vec![],
+                questions: vec![],
             };
 
             let dissent_id = Uuid::new_v4();
@@ -888,6 +998,7 @@ mod tests {
                 positions: vec![],
                 dissents: vec![],
                 risks: vec![],
+                questions: vec![],
             };
 
             let dissent_id = Uuid::new_v4();
@@ -967,6 +1078,7 @@ mod tests {
                         }),
                     },
                 ],
+                questions: vec![],
             };
 
             store
@@ -1000,6 +1112,83 @@ mod tests {
     }
 
     #[test]
+    fn questions_round_trip_with_id_reason_and_provenance() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!(
+            "ringi-dossier-questions-{}.sqlite",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+
+        let open_question_id = Uuid::new_v4();
+        let answered_question_id = Uuid::new_v4();
+        {
+            let mut store = DossierStore::open(&path).expect("open");
+            store.insert_dossier("dossier-1", "draft").unwrap();
+
+            let event = crate::event::Event::new_public(
+                crate::event::EventPayload::PublicRecord("supplier answer".into()),
+                7,
+            );
+            let event_id = event.id;
+
+            let revision = crate::revision::Revision {
+                revision_id: Uuid::new_v4(),
+                parent_digest: None,
+                content_digest: crate::revision::Digest("dig".into()),
+                original_proposal: "prop".into(),
+                current_understanding: "und".into(),
+                positions: vec![],
+                dissents: vec![],
+                risks: vec![],
+                questions: vec![
+                    crate::revision::Question {
+                        id: open_question_id,
+                        text: "open question".into(),
+                        answered_by: None,
+                    },
+                    crate::revision::Question {
+                        id: answered_question_id,
+                        text: "answered question".into(),
+                        answered_by: Some(crate::revision::Resolution {
+                            reason: "Acme Corp".into(),
+                            provenance: vec![crate::revision::EventRef { event_id }],
+                        }),
+                    },
+                ],
+            };
+
+            store
+                .commit_successor_revision("dossier-1", None, &revision, &[event])
+                .expect("commit");
+        }
+
+        let store = DossierStore::open(&path).expect("reopen");
+        let reloaded = store
+            .get_latest_revision("dossier-1")
+            .expect("get")
+            .expect("some");
+
+        assert_eq!(reloaded.questions.len(), 2);
+        let open = reloaded
+            .questions
+            .iter()
+            .find(|q| q.id == open_question_id)
+            .expect("open question present");
+        assert!(open.answered_by.is_none());
+        let answered = reloaded
+            .questions
+            .iter()
+            .find(|q| q.id == answered_question_id)
+            .expect("answered question present");
+        let res = answered.answered_by.as_ref().expect("answered");
+        assert_eq!(res.reason, "Acme Corp");
+        assert_eq!(res.provenance.len(), 1);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
     fn multi_revision_carries_dissent_forward_and_loads_latest_snapshot() {
         let dir = std::env::temp_dir();
         let path = dir.join(format!("ringi-dossier-multi-{}.sqlite", std::process::id()));
@@ -1024,6 +1213,7 @@ mod tests {
                     resolved_by: None,
                 }],
                 risks: vec![],
+                questions: vec![],
             };
             store
                 .commit_successor_revision("dossier-1", None, &rev_a, &[])
@@ -1053,6 +1243,7 @@ mod tests {
                     }),
                 }],
                 risks: vec![],
+                questions: vec![],
             };
             store
                 .commit_successor_revision(
@@ -1111,6 +1302,7 @@ mod tests {
                         }],
                     }),
                 }],
+                questions: vec![],
             };
 
             let result = store.commit_successor_revision("dossier-1", None, &revision, &[]);
@@ -1159,6 +1351,7 @@ mod tests {
                 positions: vec![],
                 dissents: vec![],
                 risks: vec![],
+                questions: vec![],
             };
 
             // First commit succeeds
