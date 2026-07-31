@@ -62,6 +62,7 @@ permission, and durability.
 
 ## References
 
+- Naming worldview (native register, seam rule, banned queue-runtime vocabulary): `docs/naming.md`
 - Operating protocol and Definition of Done: `AGENTS.md`
 - Phased plan, deferred decisions, and the family-dependency stance: `BACKLOG.md`
 - Shipped requirements: `openspec/specs/`
