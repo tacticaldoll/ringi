@@ -55,7 +55,9 @@ pub fn render_archive(dossier_id: &str, store: &DossierStore) -> anyhow::Result<
         dossier.locked_settings.arbitration.preset
     )?;
 
-    if let Some(rev) = store.get_latest_revision(dossier_id)? {
+    let latest_revision = store.get_latest_revision(dossier_id)?;
+
+    if let Some(rev) = &latest_revision {
         writeln!(&mut out, "\n## Final SSOT")?;
         writeln!(&mut out, "\n### Original Proposal")?;
         writeln!(&mut out, "{}", rev.original_proposal)?;
@@ -66,14 +68,22 @@ pub fn render_archive(dossier_id: &str, store: &DossierStore) -> anyhow::Result<
     }
 
     writeln!(&mut out, "\n## Conditions")?;
-    if dossier.conditions.is_empty() {
+    let conditions = latest_revision
+        .as_ref()
+        .map(|rev| rev.conditions.as_slice())
+        .unwrap_or(&[]);
+    if conditions.is_empty() {
         writeln!(&mut out, "*(No conditions attached)*")?;
     } else {
-        for condition in &dossier.conditions {
+        for condition in conditions {
             writeln!(
                 &mut out,
                 "- [{}] {}",
-                if condition.is_met { "x" } else { " " },
+                if condition.resolved_by.is_some() {
+                    "x"
+                } else {
+                    " "
+                },
                 condition.description
             )?;
         }
@@ -126,17 +136,12 @@ pub fn render_archive(dossier_id: &str, store: &DossierStore) -> anyhow::Result<
 mod tests {
     use super::*;
     use crate::dossier::{
-        ArbitrationSettings, Condition, Limits, LockedSettings, RoleBindings, StrategyPreset,
-        SubmittedDossier,
+        ArbitrationSettings, Limits, LockedSettings, RoleBindings, StrategyPreset, SubmittedDossier,
     };
-    use crate::revision::{Digest as RevisionDigest, Revision};
+    use crate::revision::{Condition, Digest as RevisionDigest, Revision};
     use uuid::Uuid;
 
     fn approved_dossier(id: Uuid) -> SubmittedDossier {
-        approved_dossier_with_conditions(id, vec![])
-    }
-
-    fn approved_dossier_with_conditions(id: Uuid, conditions: Vec<Condition>) -> SubmittedDossier {
         SubmittedDossier {
             id,
             state: LifecycleState::Approved,
@@ -148,11 +153,14 @@ mod tests {
                     arbitrator: "unused".to_string(),
                 },
             },
-            conditions,
         }
     }
 
     fn base_revision() -> Revision {
+        revision_with_conditions(vec![])
+    }
+
+    fn revision_with_conditions(conditions: Vec<Condition>) -> Revision {
         Revision {
             revision_id: Uuid::new_v4(),
             parent_digest: None,
@@ -163,6 +171,7 @@ mod tests {
             dissents: vec![],
             risks: vec![],
             questions: vec![],
+            conditions,
         }
     }
 
@@ -248,30 +257,33 @@ mod tests {
     }
 
     #[test]
-    fn conditions_render_as_checkboxes_matching_their_final_met_status() {
+    fn conditions_render_as_checkboxes_matching_their_final_resolved_status() {
         let mut store = open_store("conditions");
         let id = Uuid::new_v4();
         let id_str = id.to_string();
-        let dossier = approved_dossier_with_conditions(
-            id,
-            vec![
-                Condition {
-                    id: Uuid::new_v4(),
-                    description: "Security review completed".into(),
-                    is_met: true,
-                },
-                Condition {
-                    id: Uuid::new_v4(),
-                    description: "Load test passed".into(),
-                    is_met: false,
-                },
-            ],
-        );
         store
-            .insert_dossier(&id_str, &serde_json::to_string(&dossier).unwrap())
+            .insert_dossier(
+                &id_str,
+                &serde_json::to_string(&approved_dossier(id)).unwrap(),
+            )
             .unwrap();
+        let revision = revision_with_conditions(vec![
+            Condition {
+                id: Uuid::new_v4(),
+                description: "Security review completed".into(),
+                resolved_by: Some(crate::revision::Resolution {
+                    reason: "reviewed".into(),
+                    provenance: vec![],
+                }),
+            },
+            Condition {
+                id: Uuid::new_v4(),
+                description: "Load test passed".into(),
+                resolved_by: None,
+            },
+        ]);
         store
-            .commit_successor_revision(&id_str, None, &base_revision(), &[])
+            .commit_successor_revision(&id_str, None, &revision, &[])
             .unwrap();
 
         let rendered = render_archive(&id_str, &store).unwrap();

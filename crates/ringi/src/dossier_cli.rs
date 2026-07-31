@@ -5,9 +5,7 @@
 //! function or does the minimal glue (parsing frontmatter, computing a path) a human-facing CLI
 //! needs that the domain modules should not need to know about.
 
-use crate::dossier::{
-    Condition, Frontmatter, LifecycleState, parse_frontmatter, serialize_frontmatter,
-};
+use crate::dossier::{Frontmatter, LifecycleState, parse_frontmatter, serialize_frontmatter};
 use crate::store::DossierStore;
 use anyhow::{Context, bail};
 use std::path::{Path, PathBuf};
@@ -80,6 +78,7 @@ pub fn submit_command(id: &str, store: &mut DossierStore) -> anyhow::Result<()> 
         dissents: vec![],
         risks: vec![],
         questions: vec![],
+        conditions: vec![],
     };
     initial_revision.content_digest = initial_revision.compute_digest();
     store.commit_successor_revision(id, None, &initial_revision, &[])?;
@@ -121,10 +120,15 @@ pub fn transition_command(
         .context("Dossier not found in store")?;
     let mut dossier: crate::dossier::SubmittedDossier = serde_json::from_str(&state_json)?;
 
-    // Special handling for ApprovedWithConditions
-    let next_state = if target_state == LifecycleState::Approved && !dossier.conditions.is_empty() {
-        // If there are conditions that are NOT met, we go to ApprovedWithConditions
-        if dossier.conditions.iter().any(|c| !c.is_met) {
+    // Special handling for ApprovedWithConditions: conditions live on the latest revision, not
+    // the dossier itself.
+    let next_state = if target_state == LifecycleState::Approved {
+        let revision = store
+            .get_latest_revision(id)?
+            .context("No revisions found for dossier")?;
+        if !revision.conditions.is_empty()
+            && revision.conditions.iter().any(|c| c.resolved_by.is_none())
+        {
             LifecycleState::ApprovedWithConditions
         } else {
             target_state
@@ -184,21 +188,26 @@ pub fn add_condition_command(
     let state_json = store
         .get_dossier_state(id)?
         .context("Dossier not found in store")?;
-    let mut dossier: crate::dossier::SubmittedDossier = serde_json::from_str(&state_json)?;
+    let dossier: crate::dossier::SubmittedDossier = serde_json::from_str(&state_json)?;
 
     if dossier.state != LifecycleState::ReadyForDecision {
         bail!("Can only add conditions to a dossier in ReadyForDecision state");
     }
 
-    let condition = Condition {
-        id: uuid::Uuid::new_v4(),
-        description: description.to_string(),
-        is_met: false,
-    };
-
-    dossier.conditions.push(condition);
-    let new_state_json = serde_json::to_string(&dossier)?;
-    store.insert_dossier(id, &new_state_json)?;
+    let current_revision = store
+        .get_latest_revision(id)?
+        .context("No revisions found for dossier")?;
+    let successor = current_revision
+        .apply_condition_move(crate::revision::ConditionMove::Add {
+            description: description.to_string(),
+        })
+        .map_err(|e| anyhow::anyhow!(e))?;
+    store.commit_successor_revision(
+        id,
+        Some(&current_revision.revision_id.to_string()),
+        &successor,
+        &[],
+    )?;
 
     println!("Added condition to dossier {}: {}", id, description);
     Ok(())
@@ -237,12 +246,16 @@ pub fn inspect_command(id: &str, store: &DossierStore) -> anyhow::Result<()> {
                 crate::convergence::is_ready_for_decision(&rev)
             );
         }
-    }
 
-    if !dossier.conditions.is_empty() {
-        println!("\nConditions:");
-        for c in &dossier.conditions {
-            println!("- [{}] {}", if c.is_met { "x" } else { " " }, c.description);
+        if !rev.conditions.is_empty() {
+            println!("\nConditions:");
+            for c in &rev.conditions {
+                println!(
+                    "- [{}] {}",
+                    if c.resolved_by.is_some() { "x" } else { " " },
+                    c.description
+                );
+            }
         }
     }
 
@@ -255,7 +268,7 @@ mod tests {
     use crate::dossier::{
         ArbitrationSettings, Limits, LockedSettings, RoleBindings, StrategyPreset, SubmittedDossier,
     };
-    use crate::revision::{Digest, Revision};
+    use crate::revision::{Condition, Digest, Revision};
     use std::os::unix::fs::PermissionsExt;
     use uuid::Uuid;
 
@@ -335,11 +348,6 @@ mod tests {
                     arbitrator: "unused".to_string(),
                 },
             },
-            conditions: vec![Condition {
-                id: Uuid::new_v4(),
-                description: "Budget is under $1000".into(),
-                is_met: false,
-            }],
         };
         let json = serde_json::to_string(&dossier).unwrap();
 
@@ -361,6 +369,11 @@ mod tests {
                     dissents: vec![],
                     risks: vec![],
                     questions: vec![],
+                    conditions: vec![Condition {
+                        id: Uuid::new_v4(),
+                        description: "Budget is under $1000".into(),
+                        resolved_by: None,
+                    }],
                 },
                 &[],
             )
@@ -412,11 +425,6 @@ mod tests {
                     arbitrator: "unused".to_string(),
                 },
             },
-            conditions: vec![Condition {
-                id: Uuid::new_v4(),
-                description: "Security team has signed off".into(),
-                is_met: false,
-            }],
         };
         let json = serde_json::to_string(&dossier).unwrap();
 
@@ -438,6 +446,11 @@ mod tests {
                     dissents: vec![],
                     risks: vec![],
                     questions: vec![],
+                    conditions: vec![Condition {
+                        id: Uuid::new_v4(),
+                        description: "Security team has signed off".into(),
+                        resolved_by: None,
+                    }],
                 },
                 &[],
             )

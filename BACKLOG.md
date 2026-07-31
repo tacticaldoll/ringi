@@ -41,8 +41,28 @@ than relabelling them.
   store persistence; `build_respondent_prompt` gained an `## Open Questions` section, and
   `build_arbitrator_prompt` now shows every unresolved item's stable id (a gap found while
   dogfooding: ringi mints ids for new risks/questions, so without this the arbitrator could never
-  target an existing item again). Conditions (the isolated per-condition evaluator loop) remain
-  explicitly untouched — see `Residual expansion` below.
+  target an existing item again). Conditions (the isolated per-condition evaluator loop) remained
+  explicitly untouched at this point — see the next entry for their own fold.
+- **Conditions folded into the residual model too (2026-07-29,
+  `fold-conditions-into-residual-model`):** `Condition` moved from a dossier-level `{ id,
+  description, is_met: bool }` to a `Revision` field, `{ id, description, resolved_by:
+  Option<Resolution> }`, mirroring `Dissent`/`Risk`/`Question` exactly (stable id, real
+  reason/provenance storage — previously an evaluator's reason/provenance were computed and then
+  discarded). Mutation goes through a new `ConditionMove` enum (`Add`/`Satisfy`) — deliberately
+  *not* added as variants of the arbitrator's `Move` enum, so "an arbitrator can never author or
+  satisfy a condition" is a compile-time fact rather than a runtime check. Both enums share the
+  same `residual_ledger` seam composing `cadw`'s `Ledger`. `add_condition_command` and
+  `evaluate_conditions` now produce real successor revisions via `commit_successor_revision`
+  (replacing the old `record_condition_evaluation` whole-dossier-JSON overwrite); conditions get
+  their own SQL table (`conditions`/`condition_resolution_provenance`), mirroring risks/questions.
+  Deliberately **not** changed: `convergence.rs`'s suunta projection stays scoped to
+  dissents/risks/questions only — readiness to present a dossier for decision
+  (`Deliberating` → `ReadyForDecision`) still never depends on conditions (which can only be added
+  after that gate is first crossed), preserving the spec'd distinction between that goal and
+  "are all conditions now satisfied" (still a direct field check in `transition_command`, never
+  routed through suunta). Manually dogfooded end-to-end (add a condition, evaluate to `Unknown`
+  twice confirming retry, then `True`, confirming the archive and sealed-event trail all reflect
+  it correctly, and `approve` reaching plain `Approved` instead of `ApprovedWithConditions`).
 - **`Revision::apply_moves` now composes cadw's `Ledger` (2026-07-29):** `crate::residual_ledger`
   is ringi's seam onto `cadw` — a sans-I/O batch-fold kernel over addressable targets
   (`TargetId`/`Move`/`Validator`/`Rejection`/`Ledger`), extended with a `Move::Create` variant
@@ -132,13 +152,6 @@ coverage consumer. Any such advance happens in suunta's own repo, never inside a
   variant (ringi enumerates the residual and asks one closed question per item, one invocation
   each) remains a real, undesigned alternative; wire it to the Economy/Balanced/Assurance posture
   rather than choosing globally, if it's ever pursued.
-- **Residual expansion — conditions only now:** dissents, risks, and (since `Motion` shipped)
-  questions are all real `Revision` residual items with stable ids and their own convergence
-  target category. Conditions remain the one category still dossier-level and transient relative
-  to the revision, evaluated by the separate isolated `ConditionEvaluator` mechanism — deliberately
-  out of `Motion`'s scope (see Settled Decisions above). Folding conditions into the same residual
-  model `Motion` now covers for the other three categories is the one piece of this old entry still
-  open.
 - **Executor consumer:** sandboxing, repository editing, verification commands, patch application,
   and any consumer of an approved archive require a separate change. They are not hidden inside
   this deliberation MVP.

@@ -8,13 +8,35 @@ non-terminal — its conditions must be judged before a dossier can reach plain 
 
 ## Requirements
 
+### Requirement: A condition is a revision-level residual item, mutated only through ConditionMove
+
+A `Condition` SHALL be a field of `Revision` (stable id, description, and an optional
+`Resolution` carrying the reason and event provenance that satisfied it), not of the dossier.
+Every mutation — adding a new condition, or satisfying an existing one — SHALL go through a
+`ConditionMove` (`Add`/`Satisfy`) applied via the same `residual_ledger` seam that composes
+`cadw`'s `Ledger` for dissents, risks, and questions, producing a new successor revision. The
+arbitrator's `Move` enum SHALL NOT gain any condition-related variant — a condition can never be
+added or satisfied by an arbitrator invocation, only by `add_condition_command` (human-authored)
+or `evaluate_conditions` (evaluator-judged).
+
+#### Scenario: Adding a condition produces a successor revision
+
+- **WHEN** a human adds a condition to a dossier in `ReadyForDecision`
+- **THEN** a new revision is committed whose `conditions` includes the new condition, unresolved
+
+#### Scenario: A satisfied condition carries the reason and provenance that satisfied it
+
+- **WHEN** a condition is satisfied by a `True` verdict
+- **THEN** the successor revision's matching condition has a `Resolution` with that verdict's
+  reason and event provenance, reloadable after a fresh store connection
+
 ### Requirement: An unmet condition is judged by an isolated evaluator invocation
 
-For each condition on a dossier in `ReadyForDecision` whose `is_met` is `false`, the system SHALL
-invoke an Agent CLI in the `ConditionEvaluator` role with a prompt containing only the dossier's
-latest revision's public SSOT (`original_proposal`, `current_understanding`) and that single
-condition's description. The prompt MUST NOT include any other condition, any sealed evaluator
-reasoning from a prior evaluation, or any dissent or risk.
+For each condition on the dossier's latest revision whose `resolved_by` is `None`, the system
+SHALL invoke an Agent CLI in the `ConditionEvaluator` role with a prompt containing only the
+dossier's latest revision's public SSOT (`original_proposal`, `current_understanding`) and that
+single condition's description. The prompt MUST NOT include any other condition, any sealed
+evaluator reasoning from a prior evaluation, or any dissent, risk, or question.
 
 #### Scenario: A condition's prompt does not leak another condition's description
 
@@ -24,26 +46,30 @@ reasoning from a prior evaluation, or any dissent or risk.
 
 ### Requirement: Only a True verdict satisfies a condition
 
-A condition's `is_met` SHALL become `true` only when its evaluator invocation's parsed verdict is
-`ConditionVerdict::True`. A `False` or `Unknown` verdict SHALL leave `is_met` as `false` and SHALL
-release the evaluation's claim for retry under the same coordinate, rather than settling it
-fulfilled — a negative or uncertain verdict is a normal, expected answer that later circumstances
-may change, not a permanent fact about the condition.
+A condition's `resolved_by` SHALL become `Some` only when its evaluator invocation's parsed
+verdict is `ConditionVerdict::True`, applying `ConditionMove::Satisfy` with that verdict's reason
+and provenance. A `False` or `Unknown` verdict SHALL apply no move at all — the condition's
+`resolved_by` stays `None`, exactly as an unresolved risk or question is left untouched by a
+`Move` batch that doesn't address it — and SHALL release the evaluation's claim for retry under
+the same coordinate, rather than settling it fulfilled: a negative or uncertain verdict is a
+normal, expected answer that later circumstances may change, not a permanent fact about the
+condition.
 
-#### Scenario: A True verdict marks the condition met
+#### Scenario: A True verdict satisfies the condition
 
 - **WHEN** evaluating an unmet condition produces a `ConditionVerdict::True`
-- **THEN** that condition's `is_met` becomes `true`
+- **THEN** that condition's `resolved_by` becomes `Some`, carrying the verdict's reason and
+  provenance
 
-#### Scenario: An Unknown verdict does not mark the condition met
+#### Scenario: An Unknown verdict does not satisfy the condition
 
 - **WHEN** evaluating an unmet condition produces a `ConditionVerdict::Unknown`
-- **THEN** that condition's `is_met` remains `false`
+- **THEN** that condition's `resolved_by` remains `None`
 
-#### Scenario: A False verdict does not mark the condition met
+#### Scenario: A False verdict does not satisfy the condition
 
 - **WHEN** evaluating an unmet condition produces a `ConditionVerdict::False`
-- **THEN** that condition's `is_met` remains `false`
+- **THEN** that condition's `resolved_by` remains `None`
 
 #### Scenario: A negative verdict's coordinate remains claimable for retry
 
@@ -73,8 +99,9 @@ subsequently-built respondent or arbitrator prompt.
 ### Requirement: An ApprovedWithConditions dossier can be reopened for re-evaluation
 
 A dossier in `ApprovedWithConditions` SHALL be reachable back to `ReadyForDecision` through the
-CLI, so its unmet conditions can be judged via `evaluate` and it can eventually reach plain
-`Approved`. A dossier not in `ApprovedWithConditions` SHALL be rejected as an invalid transition.
+CLI, so its unmet conditions (on its latest revision) can be judged via `evaluate` and it can
+eventually reach plain `Approved`. A dossier not in `ApprovedWithConditions` SHALL be rejected as
+an invalid transition.
 
 #### Scenario: Reopening an ApprovedWithConditions dossier reaches ReadyForDecision
 

@@ -93,11 +93,16 @@ verification.
 
 ### Requirement: The v1 deliberation goal comprises dissents, risks, and questions
 
-A revision's deliberation goal (the suunta `Bearing`) SHALL comprise every dissent, every risk, and
-every question as a target, each with a stable `Sigil`. The residual is the subset suunta does not
-certify satisfied: a dissent, risk, or question with a provenance-bound resolution/answer is
-`Satisfied` and excluded, an open one is retained. Conditions remain dossier-level and are not
-targets of this revision-level goal.
+A revision's deliberation goal (the suunta `Bearing`) SHALL comprise every dissent, every risk,
+and every question as a target, each with a stable `Sigil`. The residual is the subset suunta does
+not certify satisfied: a dissent, risk, or question with a provenance-bound resolution/answer is
+`Satisfied` and excluded, an open one is retained. Conditions are revision-level residual items
+too (stable id, `Resolution`-shaped satisfaction, mutated via `ConditionMove` through the same
+`residual_ledger` seam as the other three), but are excluded from this particular goal: readiness
+to present a dossier to a human for decision (`Deliberating` → `ReadyForDecision`) does not depend
+on conditions, which can only be added after that gate is first crossed. Whether a dossier's
+conditions are all satisfied is a separate question, answered directly from the latest revision's
+`conditions` field, never routed through this goal or through suunta.
 
 #### Scenario: Goal enumerates all dissents, risks, and questions; residual omits satisfied ones
 
@@ -110,22 +115,22 @@ targets of this revision-level goal.
 ### Requirement: A revision's content digest is derived from its content
 
 A revision's `content_digest` SHALL be a value computed from its SSOT content (`original_proposal`,
-`current_understanding`, `positions`, `dissents`, `risks`, `questions`) such that two revisions with
-identical content in those fields have identical digests, and a revision whose content differs in
-any of those fields has a different digest. The digest MUST NOT be derived from the revision's
-identifier or any other value that varies independently of content. This computation MUST be
-identical for a dossier's initial revision and for every successor produced by applying a `Move`
-batch.
+`current_understanding`, `positions`, `dissents`, `risks`, `questions`, `conditions`) such that two
+revisions with identical content in those fields have identical digests, and a revision whose
+content differs in any of those fields has a different digest. The digest MUST NOT be derived from
+the revision's identifier or any other value that varies independently of content. This
+computation MUST be identical for a dossier's initial revision and for every successor produced by
+applying a `Move` or `ConditionMove`.
 
 #### Scenario: Identical content produces the same digest
 
 - **WHEN** two revisions are constructed with the same `original_proposal`, `current_understanding`,
-  `positions`, `dissents`, `risks`, and `questions`
+  `positions`, `dissents`, `risks`, `questions`, and `conditions`
 - **THEN** their computed content digests are equal
 
 #### Scenario: Changing content changes the digest
 
-- **WHEN** a revision's `current_understanding` (or any other SSOT field, including `questions`)
+- **WHEN** a revision's `current_understanding` (or any other SSOT field, including `conditions`)
   differs from another revision's
 - **THEN** their computed content digests are not equal
 

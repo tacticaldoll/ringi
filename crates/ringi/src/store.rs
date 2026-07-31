@@ -1,7 +1,7 @@
 //! The durable SQLite store for the dossier domain: `dossiers` (whole-`SubmittedDossier` JSON,
-//! including its locked settings and conditions), `revisions`, `dissents`/`risks` with their
-//! resolution provenance, and `events`. This is not the pacta claim/lease state — that table and
-//! connection live in `registry.rs`, opened separately against the same file.
+//! including its locked settings), `revisions`, `dissents`/`risks`/`questions`/`conditions` with
+//! their resolution provenance, and `events`. This is not the pacta claim/lease state — that table
+//! and connection live in `registry.rs`, opened separately against the same file.
 
 use std::path::Path;
 
@@ -133,6 +133,27 @@ pub fn init(conn: &Connection) -> Result<(), StoreError> {
                 revision_id TEXT NOT NULL,
                 event_id    TEXT NOT NULL,
                 PRIMARY KEY (question_id, revision_id, event_id)
+            )",
+        [],
+    )?;
+    // A condition mirrors a risk/question: carried forward across revisions, its logical id
+    // unique only within a revision.
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS conditions (
+                id              TEXT NOT NULL,
+                revision_id     TEXT NOT NULL,
+                description     TEXT NOT NULL,
+                resolved_reason TEXT,
+                PRIMARY KEY (id, revision_id)
+            )",
+        [],
+    )?;
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS condition_resolution_provenance (
+                condition_id TEXT NOT NULL,
+                revision_id  TEXT NOT NULL,
+                event_id     TEXT NOT NULL,
+                PRIMARY KEY (condition_id, revision_id, event_id)
             )",
         [],
     )?;
@@ -546,6 +567,46 @@ impl DossierStore {
             });
         }
 
+        let mut conditions_stmt = self.conn.prepare(
+            "SELECT id, description, resolved_reason FROM conditions WHERE revision_id = ?",
+        )?;
+        let conditions_iter = conditions_stmt.query_map(params![&id_str], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
+        })?;
+
+        let mut conditions = Vec::new();
+        for condition_res in conditions_iter {
+            let (c_id, description, resolved_reason) = condition_res?;
+            let condition_uuid = Uuid::parse_str(&c_id).unwrap_or_default();
+
+            let resolved_by = if let Some(reason) = resolved_reason {
+                let mut prov_stmt = self.conn.prepare(
+                    "SELECT event_id FROM condition_resolution_provenance WHERE condition_id = ? AND revision_id = ?",
+                )?;
+                let prov_iter =
+                    prov_stmt.query_map(params![&c_id, &id_str], |row| row.get::<_, String>(0))?;
+                let mut provenance = Vec::new();
+                for p_res in prov_iter {
+                    provenance.push(crate::revision::EventRef {
+                        event_id: Uuid::parse_str(&p_res?).unwrap_or_default(),
+                    });
+                }
+                Some(crate::revision::Resolution { reason, provenance })
+            } else {
+                None
+            };
+
+            conditions.push(crate::revision::Condition {
+                id: condition_uuid,
+                description,
+                resolved_by,
+            });
+        }
+
         Ok(Some(crate::revision::Revision {
             revision_id,
             parent_digest: parent_digest.map(crate::revision::Digest),
@@ -556,6 +617,7 @@ impl DossierStore {
             dissents,
             risks,
             questions,
+            conditions,
         }))
     }
 
@@ -661,6 +723,24 @@ impl DossierStore {
                 }
             }
         }
+        for condition in &new_revision.conditions {
+            if let Some(res) = &condition.resolved_by {
+                for prov in &res.provenance {
+                    let event_id_str = prov.event_id.to_string();
+                    let count: i64 = tx.query_row(
+                        "SELECT COUNT(1) FROM events WHERE id = ?",
+                        params![event_id_str],
+                        |r| r.get(0),
+                    )?;
+                    if count == 0 {
+                        return Err(StoreError::CorruptState(format!(
+                            "Broken event reference in condition resolution: {}",
+                            event_id_str
+                        )));
+                    }
+                }
+            }
+        }
 
         // 4. Insert revision
         tx.execute(
@@ -760,44 +840,33 @@ impl DossierStore {
         drop(stmt_questions);
         drop(stmt_question_prov);
 
-        tx.commit()?;
-        Ok(())
-    }
-
-    /// Atomically persists a condition-evaluation outcome: the dossier's updated state (with
-    /// the judged condition's `is_met` flipped, if the verdict was `True`) and the evaluator's
-    /// sealed reasoning as one event, in a single transaction.
-    pub fn record_condition_evaluation(
-        &mut self,
-        dossier_id: &str,
-        updated_dossier_json: &str,
-        event: &crate::event::Event,
-    ) -> Result<(), StoreError> {
-        let tx = self
-            .conn
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
-
-        tx.execute(
-            "INSERT OR REPLACE INTO dossiers (id, state) VALUES (?, ?)",
-            params![dossier_id, updated_dossier_json],
+        // 8. Insert conditions and their resolution provenance (mirrors risks/questions)
+        let mut stmt_conditions = tx.prepare(
+            "INSERT INTO conditions (id, revision_id, description, resolved_reason) VALUES (?, ?, ?, ?)",
         )?;
-
-        let row = EventRow::from(event);
-        tx.execute(
-            "INSERT INTO events (id, dossier_id, timestamp, visibility, payload_type, payload_content, evaluator, reasoning, idempotency_key)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            params![
-                event.id.to_string(),
-                dossier_id,
-                event.timestamp,
-                row.visibility,
-                row.payload_type,
-                row.payload_content,
-                row.evaluator,
-                row.reasoning,
-                row.idempotency_key
-            ],
+        let mut stmt_condition_prov = tx.prepare(
+            "INSERT INTO condition_resolution_provenance (condition_id, revision_id, event_id) VALUES (?, ?, ?)",
         )?;
+        for condition in &new_revision.conditions {
+            let reason = condition.resolved_by.as_ref().map(|r| r.reason.as_str());
+            stmt_conditions.execute(params![
+                condition.id.to_string(),
+                new_revision.revision_id.to_string(),
+                condition.description,
+                reason
+            ])?;
+            if let Some(res) = &condition.resolved_by {
+                for prov in &res.provenance {
+                    stmt_condition_prov.execute(params![
+                        condition.id.to_string(),
+                        new_revision.revision_id.to_string(),
+                        prov.event_id.to_string()
+                    ])?;
+                }
+            }
+        }
+        drop(stmt_conditions);
+        drop(stmt_condition_prov);
 
         tx.commit()?;
         Ok(())
@@ -902,6 +971,7 @@ mod tests {
                 dissents: vec![],
                 risks: vec![],
                 questions: vec![],
+                conditions: vec![],
             };
 
             let result = store.commit_successor_revision(
@@ -939,6 +1009,7 @@ mod tests {
                 dissents: vec![],
                 risks: vec![],
                 questions: vec![],
+                conditions: vec![],
             };
 
             let dissent_id = Uuid::new_v4();
@@ -999,6 +1070,7 @@ mod tests {
                 dissents: vec![],
                 risks: vec![],
                 questions: vec![],
+                conditions: vec![],
             };
 
             let dissent_id = Uuid::new_v4();
@@ -1079,6 +1151,7 @@ mod tests {
                     },
                 ],
                 questions: vec![],
+                conditions: vec![],
             };
 
             store
@@ -1156,6 +1229,7 @@ mod tests {
                         }),
                     },
                 ],
+                conditions: vec![],
             };
 
             store
@@ -1189,6 +1263,87 @@ mod tests {
     }
 
     #[test]
+    fn conditions_round_trip_with_id_reason_and_provenance() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!(
+            "ringi-dossier-conditions-{}.sqlite",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+
+        let open_condition_id = Uuid::new_v4();
+        let satisfied_condition_id = Uuid::new_v4();
+        {
+            let mut store = DossierStore::open(&path).expect("open");
+            store.insert_dossier("dossier-1", "draft").unwrap();
+
+            let event = crate::event::Event::new_sealed(
+                crate::event::EventPayload::SealedEvaluation {
+                    evaluator: "condition-evaluator".into(),
+                    reasoning: "security review reasoning".into(),
+                },
+                7,
+            );
+            let event_id = event.id;
+
+            let revision = crate::revision::Revision {
+                revision_id: Uuid::new_v4(),
+                parent_digest: None,
+                content_digest: crate::revision::Digest("dig".into()),
+                original_proposal: "prop".into(),
+                current_understanding: "und".into(),
+                positions: vec![],
+                dissents: vec![],
+                risks: vec![],
+                questions: vec![],
+                conditions: vec![
+                    crate::revision::Condition {
+                        id: open_condition_id,
+                        description: "open condition".into(),
+                        resolved_by: None,
+                    },
+                    crate::revision::Condition {
+                        id: satisfied_condition_id,
+                        description: "satisfied condition".into(),
+                        resolved_by: Some(crate::revision::Resolution {
+                            reason: "security review completed".into(),
+                            provenance: vec![crate::revision::EventRef { event_id }],
+                        }),
+                    },
+                ],
+            };
+
+            store
+                .commit_successor_revision("dossier-1", None, &revision, &[event])
+                .expect("commit");
+        }
+
+        let store = DossierStore::open(&path).expect("reopen");
+        let reloaded = store
+            .get_latest_revision("dossier-1")
+            .expect("get")
+            .expect("some");
+
+        assert_eq!(reloaded.conditions.len(), 2);
+        let open = reloaded
+            .conditions
+            .iter()
+            .find(|c| c.id == open_condition_id)
+            .expect("open condition present");
+        assert!(open.resolved_by.is_none());
+        let satisfied = reloaded
+            .conditions
+            .iter()
+            .find(|c| c.id == satisfied_condition_id)
+            .expect("satisfied condition present");
+        let res = satisfied.resolved_by.as_ref().expect("satisfied");
+        assert_eq!(res.reason, "security review completed");
+        assert_eq!(res.provenance.len(), 1);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
     fn multi_revision_carries_dissent_forward_and_loads_latest_snapshot() {
         let dir = std::env::temp_dir();
         let path = dir.join(format!("ringi-dossier-multi-{}.sqlite", std::process::id()));
@@ -1214,6 +1369,7 @@ mod tests {
                 }],
                 risks: vec![],
                 questions: vec![],
+                conditions: vec![],
             };
             store
                 .commit_successor_revision("dossier-1", None, &rev_a, &[])
@@ -1244,6 +1400,7 @@ mod tests {
                 }],
                 risks: vec![],
                 questions: vec![],
+                conditions: vec![],
             };
             store
                 .commit_successor_revision(
@@ -1303,6 +1460,7 @@ mod tests {
                     }),
                 }],
                 questions: vec![],
+                conditions: vec![],
             };
 
             let result = store.commit_successor_revision("dossier-1", None, &revision, &[]);
@@ -1352,6 +1510,7 @@ mod tests {
                 dissents: vec![],
                 risks: vec![],
                 questions: vec![],
+                conditions: vec![],
             };
 
             // First commit succeeds
