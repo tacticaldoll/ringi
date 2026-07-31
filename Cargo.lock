@@ -92,6 +92,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
 
 [[package]]
+name = "cadw-contract"
+version = "0.0.0"
+source = "git+https://github.com/tacticaldoll/cadw#38f5d7567dfa5e60bf5bec1374052fb327040959"
+
+[[package]]
 name = "cc"
 version = "1.2.67"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -488,6 +493,7 @@ name = "ringi"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "cadw-contract",
  "clap",
  "pacta",
  "pacta-conformance",

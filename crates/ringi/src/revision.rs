@@ -4,17 +4,17 @@
 //!
 //! `apply_moves` is the one place a successor revision is produced: an arbitration turn declares
 //! zero or more `Move`s, each targeting exactly one residual item, and ringi applies them onto a
-//! clone of the current revision — never reading a whole successor object from the agent. A
-//! residual item with no move targeting it is carried forward unchanged; there is no way to
-//! silently drop it, because removal was never an operation a `Move` batch can express. A
-//! resolution/answer must carry a non-empty reason and event provenance — the
-//! conservative-retention invariant `BACKLOG.md` states as a settled decision. `apply_moves` also
-//! sets the successor's `parent_digest` and recomputes its own content-derived `content_digest`,
-//! so the chain of digests is only ever produced here, never assembled by a caller.
+//! clone of the current revision (via the `residual_ledger` seam, which composes `cadw_contract`)
+//! — never reading a whole successor object from the agent. A residual item with no move
+//! targeting it is carried forward unchanged; there is no way to silently drop it, because
+//! removal was never an operation a `Move` batch can express. A resolution/answer must carry a
+//! non-empty reason and event provenance — the conservative-retention invariant `BACKLOG.md`
+//! states as a settled decision. `apply_moves` also sets the successor's `parent_digest` and
+//! recomputes its own content-derived `content_digest`, so the chain of digests is only ever
+//! produced here, never assembled by a caller.
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
-use std::collections::HashSet;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -74,19 +74,6 @@ pub enum Move {
     AnswerQuestion { id: Uuid, resolution: Resolution },
 }
 
-impl Move {
-    /// The existing residual item this move targets, if any. `AddRisk`/`AskQuestion` create a new
-    /// item instead of targeting one, so they have none.
-    fn target_id(&self) -> Option<Uuid> {
-        match self {
-            Move::ResolveDissent { id, .. }
-            | Move::CloseRisk { id, .. }
-            | Move::AnswerQuestion { id, .. } => Some(*id),
-            Move::AddRisk { .. } | Move::AskQuestion { .. } => None,
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Revision {
     pub revision_id: Uuid,
@@ -128,143 +115,29 @@ impl Revision {
         )
     }
 
-    /// Validates one move against `self`'s current state — the target exists, is still open (for
-    /// moves that close something), and any resolution carries a non-empty reason and event
-    /// provenance. Validation never looks at any other move in the same batch; duplicate
-    /// targeting within a batch is caught separately by the caller.
-    fn validate_move(&self, mv: &Move) -> Result<(), &'static str> {
-        match mv {
-            Move::ResolveDissent { id, resolution } => {
-                let dissent = self
-                    .dissents
-                    .iter()
-                    .find(|d| d.id == *id)
-                    .ok_or("Move targets a dissent that does not exist")?;
-                if dissent.resolved_by.is_some() {
-                    return Err("Cannot resolve a dissent that is already resolved");
-                }
-                if resolution.reason.is_empty() {
-                    return Err("Dissent resolution requires a reason");
-                }
-                if resolution.provenance.is_empty() {
-                    return Err("Dissent resolution requires event provenance");
-                }
-            }
-            Move::AddRisk { description } => {
-                if description.is_empty() {
-                    return Err("A new risk requires a non-empty description");
-                }
-            }
-            Move::CloseRisk { id, resolution } => {
-                let risk = self
-                    .risks
-                    .iter()
-                    .find(|r| r.id == *id)
-                    .ok_or("Move targets a risk that does not exist")?;
-                if risk.resolved_by.is_some() {
-                    return Err("Cannot close a risk that is already closed");
-                }
-                if resolution.reason.is_empty() {
-                    return Err("Risk resolution requires a reason");
-                }
-                if resolution.provenance.is_empty() {
-                    return Err("Risk resolution requires event provenance");
-                }
-            }
-            Move::AskQuestion { text } => {
-                if text.is_empty() {
-                    return Err("A new question requires non-empty text");
-                }
-            }
-            Move::AnswerQuestion { id, resolution } => {
-                let question = self
-                    .questions
-                    .iter()
-                    .find(|q| q.id == *id)
-                    .ok_or("Move targets a question that does not exist")?;
-                if question.answered_by.is_some() {
-                    return Err("Cannot answer a question that is already answered");
-                }
-                if resolution.reason.is_empty() {
-                    return Err("Question answer requires a reason");
-                }
-                if resolution.provenance.is_empty() {
-                    return Err("Question answer requires event provenance");
-                }
-            }
-        }
-        Ok(())
-    }
-
-    /// Applies a batch of moves to produce the successor revision. Every move is validated
-    /// against `self`'s state before any is applied; if any single move is invalid (including two
-    /// moves targeting the same existing item), the whole batch is rejected and no move is
-    /// applied — matching a whole-successor turn's all-or-nothing behavior. `original_proposal`
-    /// is carried forward unconditionally; there is no `Move` variant through which it could be
-    /// supplied or altered. A residual item with no move targeting it is carried forward exactly
-    /// as it was — absence is a no-op, never inferred as removal. `current_understanding` is the
-    /// one whole-text field the arbitrator still authors freely each turn (outside `Move`'s
-    /// vocabulary, per design) — passed in directly rather than derived from any move.
+    /// Applies a batch of moves to produce the successor revision. Structural validation and
+    /// application (existence, state-machine, duplicate-target rejection, atomicity) is composed
+    /// from `cadw_contract` via the `residual_ledger` seam — see that module for the mechanism.
+    /// `original_proposal` is carried forward unconditionally; there is no `Move` variant through
+    /// which it could be supplied or altered. A residual item with no move targeting it is
+    /// carried forward exactly as it was — absence is a no-op, never inferred as removal.
+    /// `current_understanding` is the one whole-text field the arbitrator still authors freely
+    /// each turn (outside `Move`'s vocabulary, per design) — passed in directly rather than
+    /// derived from any move.
     pub fn apply_moves(
         &self,
         current_understanding: String,
         moves: Vec<Move>,
     ) -> Result<Revision, &'static str> {
-        let mut touched: HashSet<Uuid> = HashSet::new();
-        for mv in &moves {
-            if let Some(id) = mv.target_id()
-                && !touched.insert(id)
-            {
-                return Err("A move batch cannot target the same item twice");
-            }
-            self.validate_move(mv)?;
-        }
+        let (dissents, risks, questions) =
+            crate::residual_ledger::apply(&self.dissents, &self.risks, &self.questions, moves)?;
 
         let mut next = self.clone();
         next.current_understanding = current_understanding;
         next.revision_id = Uuid::new_v4();
-        for mv in moves {
-            match mv {
-                Move::ResolveDissent { id, resolution } => {
-                    let dissent = next
-                        .dissents
-                        .iter_mut()
-                        .find(|d| d.id == id)
-                        .expect("validated above");
-                    dissent.resolved_by = Some(resolution);
-                }
-                Move::AddRisk { description } => {
-                    next.risks.push(Risk {
-                        id: Uuid::new_v4(),
-                        description,
-                        resolved_by: None,
-                    });
-                }
-                Move::CloseRisk { id, resolution } => {
-                    let risk = next
-                        .risks
-                        .iter_mut()
-                        .find(|r| r.id == id)
-                        .expect("validated above");
-                    risk.resolved_by = Some(resolution);
-                }
-                Move::AskQuestion { text } => {
-                    next.questions.push(Question {
-                        id: Uuid::new_v4(),
-                        text,
-                        answered_by: None,
-                    });
-                }
-                Move::AnswerQuestion { id, resolution } => {
-                    let question = next
-                        .questions
-                        .iter_mut()
-                        .find(|q| q.id == id)
-                        .expect("validated above");
-                    question.answered_by = Some(resolution);
-                }
-            }
-        }
+        next.dissents = dissents;
+        next.risks = risks;
+        next.questions = questions;
 
         next.parent_digest = Some(self.content_digest.clone());
         next.content_digest = next.compute_digest();

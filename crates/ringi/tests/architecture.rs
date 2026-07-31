@@ -48,3 +48,22 @@ fn pacta_is_confined_to_the_registry_seam() {
     let outcome = check(pacta_constitution().static_boundaries(), &manifest());
     assert_eq!(outcome.exit_code(), 0, "{outcome:?}");
 }
+
+fn cadw_constitution() -> Constitution {
+    Constitution::new("ringi").boundary(
+        ModuleBoundary::in_crate("ringi")
+            .module("crate::residual_ledger")
+            .confine_external_crate("cadw_contract")
+            .because(
+                "cadw's vocabulary (TargetId, Ledger, Move, Validator, Rejection, ...) is \
+                 confined to the residual-ledger seam and never names a ringi domain type — see \
+                 docs/naming.md's seam rule",
+            ),
+    )
+}
+
+#[test]
+fn cadw_is_confined_to_the_residual_ledger_seam() {
+    let outcome = check(cadw_constitution().static_boundaries(), &manifest());
+    assert_eq!(outcome.exit_code(), 0, "{outcome:?}");
+}

@@ -43,6 +43,20 @@ than relabelling them.
   dogfooding: ringi mints ids for new risks/questions, so without this the arbitrator could never
   target an existing item again). Conditions (the isolated per-condition evaluator loop) remain
   explicitly untouched — see `Residual expansion` below.
+- **`Revision::apply_moves` now composes cadw's `Ledger` (2026-07-29):** `crate::residual_ledger`
+  is ringi's seam onto `cadw_contract` — a sans-I/O batch-fold kernel over addressable targets
+  (`TargetId`/`Move`/`Validator`/`Rejection`/`Ledger`), extended with a `Move::Create` variant
+  specifically for this adoption (cadw's `Ledger::new` could only start targets `Open`, with no way
+  to express a target coming into existence mid-batch). Since cadw's `Ledger` is never persisted,
+  each call rebuilds a fresh one from ringi's own already-persisted dissents/risks/questions,
+  replays already-resolved history via an always-accepting validator to reach true current state,
+  then folds the turn's real moves with the actual `ResolutionValidator` — two `fold_batch` calls
+  per `apply_moves`, not one. This is a pure internal-implementation swap: all 92 pre-existing
+  `revision.rs`/`deliberation.rs` tests passed unchanged, and manual end-to-end dogfooding (a batch
+  mixing `Create` and `Close` in one turn — the exact shape the extension was built for) confirmed
+  identical externally-observable behavior. `cadw-contract` is a temporary git dependency
+  (`tacticaldoll/cadw`, unpublished `0.0.0`) with an explicit, justified `deny.toml` exception; see
+  `Family Dependency Stance` below for the publish-then-flip sequencing.
 - **Convergence is mechanical, not agent-declared.** Readiness for human decision is computed by
   suunta (`plan_residual(...).is_converged()`) over the residual, never asserted by the arbitrator;
   readiness ceases to be an agent output. An `Unknown` verdict is conservatively retained, so
@@ -65,8 +79,16 @@ than relabelling them.
 
 ## Family Dependency Stance
 
-Pacta, suunta, and shaahid remain published sibling mechanisms. Ringi retains each only if the new
-domain exercises its public contract honestly:
+Pacta, suunta, shaahid, and (as of this adoption) cadw are sibling mechanisms. Ringi retains each
+only if the new domain exercises its public contract honestly:
+
+- **cadw owns atomic batch-fold validation over addressable targets.** `crate::residual_ledger`
+  composes `cadw_contract::Ledger` to apply a `Move` batch's structural rules (existence,
+  state-machine, duplicate-target rejection) for `Revision::apply_moves`. Adopted via git
+  (`tacticaldoll/cadw`) while unpublished; the plan is: prove the integration through real
+  dogfooding (done — see the Settled Decisions entry above), then cadw publishes `0.1.0`, then
+  ringi's `Cargo.toml` and `deny.toml`'s `allow-git` exception both flip to a normal published-version
+  dependency, matching pacta/suunta/shaahid below. Not yet flipped — cadw has not published `0.1.0`.
 
 - **pacta owns claim/settle/reclaim of a durable Agent invocation.** `registry.rs`'s
   `SqliteRegistry` claims a pact before invoking a respondent, arbitrator, or condition-evaluator,
