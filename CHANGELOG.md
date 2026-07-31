@@ -13,6 +13,16 @@ _0.1.0 is in development; it has not been released._
 - Project shape: the `ringi` app skeleton (a `clap` command surface, stubbed) and the
   self-driving foundation (`PROJECT.md`, `AGENTS.md`, `BACKLOG.md`, OpenSpec scaffolding).
   Behavior is built bet-first — first the minimal composition loop over the pacta family.
+- `ringi evaluate <id>`: judges a `ReadyForDecision` dossier's unmet conditions with isolated
+  `ConditionEvaluator` invocations, sealing the evaluator's reasoning from respondent/arbitrator
+  context. `approve_with_conditions` can now actually reach plain `Approved` once every condition
+  is met.
+- A `tianheng`-backed architecture test (`crates/ringi/tests/architecture.rs`) mechanically
+  confines `suunta`'s imports to the `convergence` seam, alongside `scripts/naming-guard.sh`'s
+  declaration-level naming guard.
+- Revived `registry.rs`'s `SqliteRegistry`, a durable `pacta::Registry` claiming and settling each
+  respondent, arbitrator, and condition-evaluator invocation, so a crash between invoking an Agent
+  CLI and committing its result is durably distinguishable from a completed attempt.
 
 ### Changed
 
@@ -24,3 +34,14 @@ _0.1.0 is in development; it has not been released._
   shared lifecycle decisions. The durable backend now passes sequential and contention conformance,
   including an independent-connection claim fence, with only an additive claim-selection index —
   no table or stored-row-format change — and no reconcile-loop behavior change.
+- `Revision::compute_digest()` now hashes a revision's SSOT content (`original_proposal`,
+  `current_understanding`, `positions`, `dissents`, `risks`) with SHA-256, instead of formatting
+  the revision's own random `revision_id`; the initial revision `submit_command` creates no longer
+  uses a hardcoded literal.
+
+### Fixed
+
+- Two unit tests that each mutate the process's current working directory could race under
+  `cargo test`'s default parallel runner, since each was written and reviewed on its own branch
+  where it was the only such test in its module; serialized with a crate-wide
+  `PROCESS_CWD_LOCK` shared by every CWD-mutating or agent-spawning test.

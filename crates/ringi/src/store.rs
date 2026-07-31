@@ -6,12 +6,9 @@ use uuid::Uuid;
 /// The error a store returns.
 #[derive(Debug)]
 pub enum StoreError {
-    /// The presented retainer is not the current holder (or the claim is not held).
-    NotHeld,
-    /// Persisted lifecycle data cannot be represented by pacta's lifecycle model.
+    /// Persisted dossier data violates a referential-integrity invariant (a broken parent or
+    /// event reference).
     CorruptState(String),
-    /// A pacta timestamp cannot be represented exactly by SQLite's signed integer.
-    TimestampOutOfRange(u64),
     /// An underlying SQLite error.
     Sqlite(rusqlite::Error),
 }
@@ -19,11 +16,7 @@ pub enum StoreError {
 impl std::fmt::Display for StoreError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::NotHeld => write!(f, "retainer is not the current holder of any claim"),
             Self::CorruptState(message) => write!(f, "corrupt lifecycle state: {message}"),
-            Self::TimestampOutOfRange(millis) => {
-                write!(f, "timestamp {millis}ms is outside SQLite's exact range")
-            }
             Self::Sqlite(error) => write!(f, "sqlite error: {error}"),
         }
     }
@@ -32,9 +25,7 @@ impl std::fmt::Display for StoreError {
 impl std::error::Error for StoreError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::NotHeld => None,
             Self::CorruptState(_) => None,
-            Self::TimestampOutOfRange(_) => None,
             Self::Sqlite(error) => Some(error),
         }
     }

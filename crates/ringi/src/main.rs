@@ -1,13 +1,15 @@
-//! Ringi: a local automation orchestrator for Agent CLIs.
+//! Ringi: a local deliberation application for Agent CLIs.
 //!
-//! Ringi does not think or edit — Agent CLIs do that. Ringi owns the *ringi process*: it
-//! sequences a build-review-verify loop, gates actions behind policy and human approval,
-//! verifies objectively, and keeps durable state so a run can resume. The hard mechanics
-//! it composes rather than reimplements: durable step lifecycle (pacta), convergence to
-//! done (suunta), and exactly-once step idempotency (shaahid). See `PROJECT.md`.
+//! Ringi does not think or edit — Agent CLIs do that. A dossier moves through
+//! draft → submit → answer → arbitrate → decide → archive: respondents answer bounded
+//! questions, an independent arbitrator maintains the durable revision, and a human records the
+//! final decision. The hard mechanics it composes rather than reimplements: durable
+//! claim/settle around each Agent-CLI invocation (pacta, via `registry`), and mechanical
+//! convergence over the residual (suunta, via `convergence`). Exactly-once invocation
+//! idempotency (shaahid) is not yet attached — see `BACKLOG.md`'s Family Dependency Stance.
+//! See `PROJECT.md`.
 //!
-//! This binary is the command surface. `init`, `run`, and `status` are wired; the remaining
-//! commands land in later phases (see `BACKLOG.md`) and are still stubbed.
+//! This binary is the dossier command surface.
 
 use std::path::{Path, PathBuf};
 
@@ -44,7 +46,7 @@ enum Command {
     Cancel { id: String },
     /// Invalidate a dossier.
     Invalidate { id: String },
-    /// Add a condition to an approved-with-conditions dossier.
+    /// Add a condition to a dossier in ReadyForDecision.
     Condition { id: String, description: String },
     /// Judge a dossier's unmet conditions with isolated evaluator invocations.
     Evaluate { id: String },
