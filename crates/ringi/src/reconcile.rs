@@ -4,8 +4,9 @@
 //! through their public APIs, adding no lifecycle/convergence/idempotency of its own:
 //!
 //! - **suunta** plans the residual (which steps remain) and decides convergence;
-//! - **pacta** (over the `pacta-memory` reference backend) owns each step's durable
-//!   claim -> execute -> settle, with `release(reclaimable_at)` for backoff'd retry;
+//! - **pacta** (over any `Registry` backend — the reference `pacta-memory` or the durable
+//!   `SqliteRegistry`) owns each step's claim -> execute -> settle, with
+//!   `release(reclaimable_at)` for backoff'd retry;
 //! - **shaahid** witnesses each step attempt so its side effect happens exactly once, even
 //!   when a claim is reclaimed after the work already succeeded.
 //!
@@ -15,7 +16,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use pacta::{Registry, Timestamp};
+use pacta::{Pact, Registry, Timestamp};
 use pacta_memory::MemoryRegistry;
 use shaahid::{Attestation, Deed, witness};
 use suunta::{
@@ -114,23 +115,37 @@ mod seam {
     }
 }
 
-/// Reconcile `steps` to done, composing the family. Returns a [`Report`] to assert on.
+/// Reconcile `steps` to done over the reference in-memory backend. See [`run_with`].
+#[must_use]
+pub fn run(steps: Vec<StepSpec>) -> Report {
+    run_with(steps, MemoryRegistry::seeded)
+}
+
+/// Reconcile `steps` to done, composing the family over any backend built by `make`.
+///
+/// `make(pacts, lease_millis)` returns a seeded [`Registry`] — the same constructor shape
+/// `pacta-conformance` uses — so the loop is backend-agnostic: the reference backend and a
+/// durable `SqliteRegistry` run the identical composition. Returns a [`Report`] to assert on.
 ///
 /// # Panics
 ///
-/// Panics only if the reference registry returns an error, which it cannot for the calls
-/// made here (they are always on a valid current holder or a fresh claim).
+/// Panics only if the registry returns an error, which it does not for the calls made here
+/// (always a valid current holder or a fresh claim).
 #[must_use]
-pub fn run(steps: Vec<StepSpec>) -> Report {
+pub fn run_with<R, F>(steps: Vec<StepSpec>, make: F) -> Report
+where
+    R: Registry,
+    R::Error: std::fmt::Debug,
+    F: FnOnce(Vec<Pact>, u64) -> R,
+{
     // The desired set, as a suunta Bearing (each step a Correction identified by a Sigil).
     let targets: Vec<Correction<StepSpec>> = steps
         .iter()
         .map(|s| Correction::new(Sigil::new(&s.id), Reversibility::Reversible, s.clone()))
         .collect();
 
-    // Seed the reference backend with one pact per step (ingress is the backend's; the
-    // reference seeds at construction).
-    let registry = MemoryRegistry::seeded(
+    // Build one pact per step and seed the backend (ingress is the backend's).
+    let registry = make(
         targets.iter().map(seam::step_to_pact).collect(),
         LEASE_MILLIS,
     );
@@ -283,5 +298,33 @@ mod tests {
             report.deduplicated.contains("step:lapses"),
             "the reclaimed-after-success step must be deduplicated by shaahid: {report:?}"
         );
+    }
+
+    #[test]
+    fn the_same_composition_runs_over_the_durable_sqlite_backend() {
+        // Backend-agnostic: the identical loop, over a real SQLite Registry, converges with
+        // the same exactly-once and retry behavior — now durable.
+        let report = run_with(
+            vec![
+                StepSpec::new("step:normal", StepMode::Normal),
+                StepSpec::new("step:fails-first", StepMode::FailsFirst),
+                StepSpec::new("step:lapses", StepMode::LapsesAfterSuccess),
+            ],
+            crate::store::SqliteRegistry::seeded,
+        );
+
+        assert!(
+            report.converged,
+            "must converge over SqliteRegistry: {report:?}"
+        );
+        for id in ["step:normal", "step:fails-first", "step:lapses"] {
+            assert_eq!(
+                report.executions.get(id).copied(),
+                Some(1),
+                "{id} must execute exactly once over SqliteRegistry: {report:?}"
+            );
+        }
+        assert!(report.retried.contains("step:fails-first"), "{report:?}");
+        assert!(report.deduplicated.contains("step:lapses"), "{report:?}");
     }
 }

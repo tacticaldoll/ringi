@@ -80,6 +80,13 @@ creation (ingress is backend/consumer territory, by pacta's design).
    verification runner, in-memory reconcile loop.
 2. **Persistence**: `SqliteRegistry` over pacta's contract (conformance-proven) + ringi's
    domain tables; runs/steps/events/artifacts; resume.
+   - **Registry half — landed.** `store::SqliteRegistry` implements `pacta::Registry` over
+     rusqlite (sync, injected time) and **passes `pacta-conformance`** — the first external
+     backend to do so, validating pacta's "durable backends live outside and prove
+     themselves" claim. The reconcile loop is parameterized over the backend (`run_with`) and
+     runs the identical composition durably; a reopen test proves state survives a restart.
+     Still pending on this surface: ringi's **domain tables** (runs/steps/reviews/events/
+     artifacts/approvals) in the same DB, and a file-backed **resume** of a full run.
 3. **Policy & approval**: Action normalization, allow/ask/deny, workspace path guard, the
    approval CLI, action-hash binding, audit log.
 4. **Isolation & security**: git worktree, clean environment, secret redaction, output
