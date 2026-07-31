@@ -15,6 +15,27 @@ use anyhow::Context;
 use sha2::{Digest, Sha256};
 use std::fmt::Write;
 
+/// Renders one checkbox-list section shared by every residual category (dissents, risks,
+/// questions, conditions): a `## {heading}` line, then one `- [x|  ] {text}` line per item, or an
+/// explicit placeholder when there are none — a section is never silently omitted.
+fn render_checkbox_section(
+    out: &mut String,
+    heading: &str,
+    empty_placeholder: &str,
+    items: impl Iterator<Item = (String, bool)>,
+) -> std::fmt::Result {
+    writeln!(out, "\n## {heading}")?;
+    let mut wrote_any = false;
+    for (text, resolved) in items {
+        writeln!(out, "- [{}] {}", if resolved { "x" } else { " " }, text)?;
+        wrote_any = true;
+    }
+    if !wrote_any {
+        writeln!(out, "{empty_placeholder}")?;
+    }
+    Ok(())
+}
+
 /// One human-readable line for an event's content, regardless of which payload variant it is —
 /// so a rendered section never silently drops a payload kind no current caller constructs yet
 /// (`RawTranscript`/`Synthesis`).
@@ -67,27 +88,53 @@ pub fn render_archive(dossier_id: &str, store: &DossierStore) -> anyhow::Result<
         writeln!(&mut out, "\n*(No revisions found)*")?;
     }
 
-    writeln!(&mut out, "\n## Conditions")?;
-    let conditions = latest_revision
-        .as_ref()
-        .map(|rev| rev.conditions.as_slice())
-        .unwrap_or(&[]);
-    if conditions.is_empty() {
-        writeln!(&mut out, "*(No conditions attached)*")?;
-    } else {
-        for condition in conditions {
-            writeln!(
-                &mut out,
-                "- [{}] {}",
-                if condition.resolved_by.is_some() {
-                    "x"
-                } else {
-                    " "
-                },
-                condition.description
-            )?;
-        }
-    }
+    render_checkbox_section(
+        &mut out,
+        "Dissents",
+        "*(No dissents attached)*",
+        latest_revision
+            .as_ref()
+            .map(|rev| rev.dissents.as_slice())
+            .unwrap_or(&[])
+            .iter()
+            .map(|d| (d.claim.clone(), d.resolved_by.is_some())),
+    )?;
+
+    render_checkbox_section(
+        &mut out,
+        "Risks",
+        "*(No risks attached)*",
+        latest_revision
+            .as_ref()
+            .map(|rev| rev.risks.as_slice())
+            .unwrap_or(&[])
+            .iter()
+            .map(|r| (r.description.clone(), r.resolved_by.is_some())),
+    )?;
+
+    render_checkbox_section(
+        &mut out,
+        "Questions",
+        "*(No questions attached)*",
+        latest_revision
+            .as_ref()
+            .map(|rev| rev.questions.as_slice())
+            .unwrap_or(&[])
+            .iter()
+            .map(|q| (q.text.clone(), q.answered_by.is_some())),
+    )?;
+
+    render_checkbox_section(
+        &mut out,
+        "Conditions",
+        "*(No conditions attached)*",
+        latest_revision
+            .as_ref()
+            .map(|rev| rev.conditions.as_slice())
+            .unwrap_or(&[])
+            .iter()
+            .map(|c| (c.description.clone(), c.resolved_by.is_some())),
+    )?;
 
     let events = store.events_for_dossier(dossier_id)?;
 
@@ -253,7 +300,80 @@ mod tests {
         let rendered = render_archive(&id_str, &store).unwrap();
         assert!(rendered.contains("*(No public events recorded)*"));
         assert!(rendered.contains("*(No sealed evaluations recorded)*"));
+        assert!(rendered.contains("*(No dissents attached)*"));
+        assert!(rendered.contains("*(No risks attached)*"));
+        assert!(rendered.contains("*(No questions attached)*"));
         assert!(rendered.contains("*(No conditions attached)*"));
+    }
+
+    #[test]
+    fn dissents_risks_and_questions_render_as_checkboxes_matching_their_final_resolved_status() {
+        let mut store = open_store("residual");
+        let id = Uuid::new_v4();
+        let id_str = id.to_string();
+        store
+            .insert_dossier(
+                &id_str,
+                &serde_json::to_string(&approved_dossier(id)).unwrap(),
+            )
+            .unwrap();
+        let mut revision = base_revision();
+        revision.dissents = vec![
+            crate::revision::Dissent {
+                id: Uuid::new_v4(),
+                claim: "Too slow".into(),
+                resolved_by: Some(crate::revision::Resolution {
+                    reason: "load test passed".into(),
+                    provenance: vec![],
+                }),
+            },
+            crate::revision::Dissent {
+                id: Uuid::new_v4(),
+                claim: "Missing rollback".into(),
+                resolved_by: None,
+            },
+        ];
+        revision.risks = vec![
+            crate::revision::Risk {
+                id: Uuid::new_v4(),
+                description: "Vendor lock-in".into(),
+                resolved_by: Some(crate::revision::Resolution {
+                    reason: "contract reviewed".into(),
+                    provenance: vec![],
+                }),
+            },
+            crate::revision::Risk {
+                id: Uuid::new_v4(),
+                description: "Rollback plan unclear".into(),
+                resolved_by: None,
+            },
+        ];
+        revision.questions = vec![
+            crate::revision::Question {
+                id: Uuid::new_v4(),
+                text: "Which supplier?".into(),
+                answered_by: Some(crate::revision::Resolution {
+                    reason: "Acme Corp".into(),
+                    provenance: vec![],
+                }),
+            },
+            crate::revision::Question {
+                id: Uuid::new_v4(),
+                text: "Which region?".into(),
+                answered_by: None,
+            },
+        ];
+        store
+            .commit_successor_revision(&id_str, None, &revision, &[])
+            .unwrap();
+
+        let rendered = render_archive(&id_str, &store).unwrap();
+        assert!(rendered.contains("- [x] Too slow"));
+        assert!(rendered.contains("- [ ] Missing rollback"));
+        assert!(rendered.contains("- [x] Vendor lock-in"));
+        assert!(rendered.contains("- [ ] Rollback plan unclear"));
+        assert!(rendered.contains("- [x] Which supplier?"));
+        assert!(rendered.contains("- [ ] Which region?"));
     }
 
     #[test]

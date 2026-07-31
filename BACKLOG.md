@@ -96,6 +96,13 @@ than relabelling them.
   no in-place verdict override.
 - **Archive:** approval produces a human-readable, integrity-bound record only. It grants no
   execution authority and triggers no workspace effect.
+- **Archive covers every residual category, not just conditions (2026-07-29,
+  `fix-archive-omits-residual`):** found via autonomous dogfooding — a never-converging arbitrator
+  that kept adding risks, cancelled after max-turns, produced an archive with no trace of the
+  unresolved risks at all. `render_archive` only ever wrote `original_proposal`/
+  `current_understanding` under "Final SSOT"; only `## Conditions` (added when conditions were
+  folded into the residual model) rendered an actual residual category. Added `## Dissents`,
+  `## Risks`, `## Questions` sections, same checkbox/placeholder shape as `## Conditions`.
 
 ## Family Dependency Stance
 
