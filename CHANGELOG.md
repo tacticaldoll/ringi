@@ -60,3 +60,7 @@ _0.1.0 is in development; it has not been released._
 - `ringi inspect` reported `Readiness: true` for a freshly-submitted dossier before any turn had
   run, since it called `is_ready` alone instead of the same root-vs-successor rule
   `run_deliberation` already applies. Both now share `is_ready_for_decision`.
+- `Cargo.toml`'s `description` (and so `ringi --help`'s top-level text) still described the
+  pre-reframe "durable, gated build-review-verify loop" model; rewritten to describe the current
+  dossier-deliberation model. A dossier draft file's frontmatter JSON is now always separated from
+  both `---` delimiters by a newline, instead of glued as `}---`/`---{` on write and rewrite.

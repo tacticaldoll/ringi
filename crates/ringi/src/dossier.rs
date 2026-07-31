@@ -207,13 +207,25 @@ pub fn parse_frontmatter(content: &str) -> Result<Frontmatter, serde_json::Error
     serde_json::from_str(content)
 }
 
+/// Serializes to pretty JSON with a trailing newline, so every call site that glues this directly
+/// against a closing `---` delimiter (`format!("...{}---...", serialize_frontmatter(...)?)`)
+/// gets a newline before the delimiter instead of `}---` on one line.
 pub fn serialize_frontmatter(fm: &Frontmatter) -> Result<String, serde_json::Error> {
-    serde_json::to_string_pretty(fm)
+    Ok(format!("{}\n", serde_json::to_string_pretty(fm)?))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn serialize_frontmatter_ends_with_a_newline() {
+        // So every call site that glues this directly against a closing `---` delimiter gets a
+        // newline before it, instead of the JSON's closing brace and the delimiter on one line.
+        let serialized = serialize_frontmatter(&Frontmatter::new_draft()).unwrap();
+        assert!(serialized.ends_with('\n'));
+        assert!(!serialized.ends_with("}\n\n"));
+    }
 
     #[test]
     fn test_draft_to_submit() {

@@ -58,7 +58,11 @@ pub fn submit_command(id: &str, store: &mut DossierStore) -> anyhow::Result<()> 
 
     // Update the frontmatter state
     frontmatter.state = LifecycleState::Submitted;
-    let new_content = format!("---{}---{}", serialize_frontmatter(&frontmatter)?, parts[2]);
+    let new_content = format!(
+        "---\n{}---{}",
+        serialize_frontmatter(&frontmatter)?,
+        parts[2]
+    );
     std::fs::write(&path, new_content)?;
 
     // Commit to SQLite
@@ -143,7 +147,11 @@ pub fn transition_command(
         if parts.len() == 3 {
             let mut frontmatter = parse_frontmatter(parts[1])?;
             frontmatter.state = dossier.state;
-            let new_content = format!("---{}---{}", serialize_frontmatter(&frontmatter)?, parts[2]);
+            let new_content = format!(
+                "---\n{}---{}",
+                serialize_frontmatter(&frontmatter)?,
+                parts[2]
+            );
             std::fs::write(&path, new_content)?;
         }
     }
