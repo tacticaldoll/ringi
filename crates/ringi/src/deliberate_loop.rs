@@ -91,11 +91,10 @@ pub fn run_deliberation(
 
     // Readiness is a mechanical fact computed from the residual by suunta, never an agent
     // claim; it is evaluated on every freshly-produced successor below so final-turn
-    // convergence still transitions. Here, before any turn, only a revision produced by
-    // arbitration (one with a parent) may already be converged — this covers resuming an
-    // already-converged dossier. The un-deliberated root is never treated as converged: an
-    // empty residual there means "not yet deliberated", not "resolved".
-    if current_revision.parent_digest.is_some() && crate::convergence::is_ready(&current_revision) {
+    // convergence still transitions. Here, before any turn, this covers resuming an
+    // already-converged dossier — see `is_ready_for_decision`'s doc for why the un-deliberated
+    // root is never treated as ready on its own.
+    if crate::convergence::is_ready_for_decision(&current_revision) {
         return mark_ready(dossier_id, &mut dossier, store);
     }
 

@@ -57,3 +57,6 @@ _0.1.0 is in development; it has not been released._
 - `Revision::propose_successor` now rejects a successor whose `original_proposal` differs from its
   parent's — previously nothing enforced this, so a buggy or malicious agent response could
   silently move the target a dossier is deliberating toward.
+- `ringi inspect` reported `Readiness: true` for a freshly-submitted dossier before any turn had
+  run, since it called `is_ready` alone instead of the same root-vs-successor rule
+  `run_deliberation` already applies. Both now share `is_ready_for_decision`.

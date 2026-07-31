@@ -207,7 +207,11 @@ pub fn inspect_command(id: &str, store: &DossierStore) -> anyhow::Result<()> {
     if let Some(rev) = store.get_latest_revision(id)? {
         println!("Latest Revision: {}", rev.revision_id);
         // Readiness is a mechanical fact recomputed from the residual, never a stored flag.
-        println!("Readiness: {}", crate::convergence::is_ready(&rev));
+        // Matches run_deliberation's own rule: an un-deliberated root is never ready on its own.
+        println!(
+            "Readiness: {}",
+            crate::convergence::is_ready_for_decision(&rev)
+        );
     }
 
     if !dossier.conditions.is_empty() {
