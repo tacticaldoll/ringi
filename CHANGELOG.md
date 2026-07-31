@@ -54,3 +54,6 @@ _0.1.0 is in development; it has not been released._
   dossier (e.g. a respondent's re-invocation silently claiming and fulfilling the arbitrator's
   still-pending one). Each pact's docket is now the coordinate's own idempotency key, so a docket
   never holds more than one pact.
+- `Revision::propose_successor` now rejects a successor whose `original_proposal` differs from its
+  parent's — previously nothing enforced this, so a buggy or malicious agent response could
+  silently move the target a dossier is deliberating toward.
