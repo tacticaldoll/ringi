@@ -12,9 +12,9 @@ repository = "https://github.com/tacticaldoll/ringi"
 [workspace.dependencies]
 # Published family facades composed by ringi: pacta owns lifecycle, suunta owns convergence,
 # shaahid owns idempotency, and cadw owns residual-ledger batch-fold validation.
-pacta = "0.2.2"
-pacta-memory = "0.2.2"
-pacta-conformance = "0.2.2"
+pacta = "0.3.0"
+pacta-memory = "0.3.0"
+pacta-conformance = "0.3.0"
 rusqlite = { version = "0.32", features = ["bundled"] }
 suunta = "0.1.1"
 shaahid = "0.1.1"
