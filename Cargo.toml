@@ -19,7 +19,7 @@ pacta = "0.3.1"
 pacta-memory = "0.3.1"
 pacta-conformance = "0.3.1"
 rusqlite = { version = "0.32", features = ["bundled"] }
-suunta = "0.1.1"
+suunta = "0.2.1"
 cadw = "0.1.1"
 uuid = { version = "1", features = ["v5"] }
 clap = { version = "4", features = ["derive"] }

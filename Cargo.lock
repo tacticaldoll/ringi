@@ -634,18 +634,18 @@ checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
 
 [[package]]
 name = "suunta"
-version = "0.1.1"
+version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d5155fbb427c4bedb9b5fb4c4767b8361ed009425845772da53e097e854e765d"
+checksum = "152b3e67fd1ab5d7b8f6047fedea4824f965fc271059ec6d5e0c7d23e6c56637"
 dependencies = [
  "suunta-contract",
 ]
 
 [[package]]
 name = "suunta-contract"
-version = "0.1.1"
+version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "134b8657ea862b66d6e996eaf0be2242d390b6995f4fd714e6801669f79fb795"
+checksum = "c29d74b916deddc832ee19d5f90ca637685376057a4bc6014b1dd7b4c236c209"
 
 [[package]]
 name = "syn"
