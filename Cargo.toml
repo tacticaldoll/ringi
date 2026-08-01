@@ -15,12 +15,12 @@ categories = ["command-line-utilities"]
 # Published family facades composed by ringi: pacta owns lifecycle, suunta owns convergence,
 # and cadw owns residual-ledger batch-fold validation. shaahid is assessed and declined, not
 # depended on — see BACKLOG.md's Family Dependency Stance.
-pacta = "0.3.0"
-pacta-memory = "0.3.0"
-pacta-conformance = "0.3.0"
+pacta = "0.3.1"
+pacta-memory = "0.3.1"
+pacta-conformance = "0.3.1"
 rusqlite = { version = "0.32", features = ["bundled"] }
 suunta = "0.1.1"
-cadw = "0.1.0"
+cadw = "0.1.1"
 uuid = { version = "1", features = ["v5"] }
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
