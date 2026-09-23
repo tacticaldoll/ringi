@@ -4,11 +4,8 @@
 
 How an interrupted run is continued: the round loop checkpoints its progress durably as it runs —
 which build attempts succeeded and, per round, the next round to run with the findings still open —
-and a resume re-enters from that checkpoint. Completed rounds are not re-executed, and the witness
-ledger is reconstructed from the recorded rounds so exactly-once holds **across** a restart, not
-only within a process. The ledger is ringi's own durable state; shaahid's `witness` stays sans-I/O
-(no family change). Checkpointing is a no-op-default seam on the loop, so the in-memory composition
-is unchanged.
+and a resume re-enters from that checkpoint. Completed rounds are not re-executed. Checkpointing is
+a no-op-default seam on the loop, so the in-memory composition is unchanged.
 
 ## Requirements
 
@@ -29,21 +26,15 @@ behaves exactly as before.
 - **WHEN** the round loop is driven without a durable journal
 - **THEN** it behaves identically to before checkpointing existed
 
-### Requirement: An Interrupted Run Is Resumed From Its Checkpoint
+### Requirement: An Interrupted Run Resumes From Its Recorded Checkpoint
 Ringi SHALL be able to re-enter an interrupted run from its durable checkpoint: it SHALL resume at
 the recorded next round with the recorded open findings, and SHALL NOT re-execute the builds of
-rounds already completed nor re-run their reviews. The witness ledger SHALL be reconstructed from
-the recorded succeeded rounds, so a reclaimed in-flight attempt is recognized as already performed
-and attaches rather than re-executing. Resuming SHALL drive the run to convergence or the round
-limit and record the terminal outcome.
+rounds already completed nor re-run their reviews. Resuming SHALL drive the run to convergence or
+the round limit and record the terminal outcome.
 
 #### Scenario: Completed rounds are not re-executed on resume
 - **WHEN** a run interrupted after completing some rounds is resumed
 - **THEN** the builds of those completed rounds do not execute again and their reviews are not re-run
-
-#### Scenario: Exactly-once holds across a restart
-- **WHEN** a build attempt succeeded but its settlement was lost to the interruption, and the run is resumed
-- **THEN** the reclaimed attempt attaches to the recorded deed and its build side effect does not execute a second time
 
 #### Scenario: A resumed run reaches a terminal outcome
 - **WHEN** an interrupted run is resumed

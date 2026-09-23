@@ -2,33 +2,32 @@
 
 ## Purpose
 
-The consumer loop that composes suunta (residual planning and convergence), shaahid
-(exactly-once step execution), and pacta (durable step lifecycle) into a convergent,
-idempotent, durable reconcile of a desired set of steps — the orchestrator emerging from
-composition, with ringi only wiring.
+The consumer loop that composes suunta (residual planning and convergence) and pacta (durable
+step lifecycle) into a convergent, durable reconcile of a desired set of steps — the orchestrator
+emerging from composition, with ringi only wiring.
 
 ## Requirements
 
 ### Requirement: The Reconcile Loop Composes The Family Over Public APIs
 Ringi SHALL reconcile a desired set of steps to done through a consumer loop that composes the
-published suunta 0.1.1 facade (residual planning and convergence), the published shaahid 0.1.1
-facade (exactly-once step execution), and pacta (durable step lifecycle) using only the public APIs
-of those crates. Ringi SHALL add no step-lifecycle state machine, completion calculation, or
-idempotency scheme of its own — the only ringi-owned logic is the loop and thin seam adapters
-(identity mapping, findings translation). If a seam cannot be expressed via a brick's public API,
-that SHALL be recorded as a finding, not worked around by reaching inside.
+published suunta 0.1.1 facade (residual planning and convergence) and pacta (durable step
+lifecycle) using only the public APIs of those crates. Ringi SHALL add no step-lifecycle state
+machine, completion calculation, or idempotency scheme of its own — the only ringi-owned logic is
+the loop and thin seam adapters (identity mapping, findings translation). If a seam cannot be
+expressed via a brick's public API, that SHALL be recorded as a finding, not worked around by
+reaching inside.
 
 #### Scenario: The loop reconciles a desired set to done
 - **WHEN** ringi is given a set of desired steps and runs the reconcile loop
-- **THEN** it drives each step through pacta's claim/execute/settle, planning with suunta and witnessing with shaahid, until every step is done
+- **THEN** it drives each step through pacta's claim/execute/settle, planning with suunta, until every step is done
 
 #### Scenario: No brick behavior is reimplemented
-- **WHEN** the reconcile loop needs planning, convergence, idempotency, or lifecycle
+- **WHEN** the reconcile loop needs planning, convergence, or lifecycle
 - **THEN** it calls the corresponding brick rather than computing that behavior itself
 
 #### Scenario: Published facade upgrades preserve composition
-- **WHEN** ringi resolves suunta and shaahid from their published 0.1.1 facade crates
-- **THEN** the existing convergence, exactly-once, reclaim, restart, and agent-backed composition scenarios remain green without a ringi-owned replacement mechanism
+- **WHEN** ringi resolves suunta from its published 0.1.1 facade crate
+- **THEN** the existing convergence, reclaim, restart, and agent-backed composition scenarios remain green without a ringi-owned replacement mechanism
 
 ### Requirement: Convergence Is Decided By Suunta
 The loop SHALL halt as complete only when suunta reports the residual converged, never by a
@@ -43,16 +42,6 @@ satisfaction and coverage findings and act on the returned residual.
 - **WHEN** the residual still contains a step
 - **THEN** the loop performs another cycle rather than declaring completion
 
-### Requirement: Each Step Executes Exactly Once
-A step's side effect SHALL occur exactly once across the whole run, including retries, by
-witnessing the step attempt with shaahid before performing it: a create-attestation performs
-and records; an attach-attestation is a no-op. This is what makes ringi's executor idempotent
-under pacta's at-least-once recovery.
-
-#### Scenario: A retried step still runs once
-- **WHEN** a step is executed, retried, and executed again through the loop
-- **THEN** its side effect occurred exactly once because the second attempt attaches rather than re-performs
-
 ### Requirement: A Failed Step Retries Via Deferred Reclaim
 A step that fails an attempt SHALL be retried by releasing its claim with a
 consumer-computed reclaimable instant (`release(retainer, reclaimable_at)`), so it is
@@ -64,12 +53,12 @@ is pacta's.
 - **THEN** the step is not claimed before that instant and is reclaimed and completed after it
 
 ### Requirement: The Composition Is Self-Checked
-The reconcile loop SHALL be exercised by a self-checking test that asserts the run converges,
-each step executed exactly once, and a failed step was withheld then reclaimed, so the bet
-cannot silently regress under the Definition of Done.
+The reconcile loop SHALL be exercised by a self-checking test that asserts the run converges and
+a failed step was withheld then reclaimed, so the bet cannot silently regress under the Definition
+of Done.
 
 #### Scenario: A regressed composition fails the gate
-- **WHEN** the loop no longer converges, double-executes a step, or mishandles retry
+- **WHEN** the loop no longer converges or mishandles retry
 - **THEN** the self-checking test fails under the Definition of Done
 
 ### Requirement: Step Execution Is Delegated To A Runner Seam
@@ -118,21 +107,6 @@ stay separate.
 - **WHEN** the loop certifies a finding target for a cycle
 - **THEN** its satisfaction is a Reviewer re-review verdict, never the verification verdict
 
-### Requirement: The Exactly-Once Attempt Identity Is Distinct From The Target Identity
-The loop SHALL identify a suunta target by a stable `Sigil` and a shaahid attempt by a distinct
-`Seal` coordinate (`<run>:<target>:<round>:<attempt>`) with a `Fingerprint` over the attempt's
-input, rather than using one identity for both. A reclaim of the same attempt SHALL re-present
-the same `Seal` (witnessed as already performed), while a new round SHALL be a new coordinate and
-therefore new work. This mapping SHALL live only in the seam adapters.
-
-#### Scenario: A new round is new work
-- **WHEN** a target is addressed again in a later round
-- **THEN** the attempt carries a new `Seal` coordinate and shaahid witnesses it as a fresh attempt, not a duplicate
-
-#### Scenario: A reclaimed attempt is not re-performed
-- **WHEN** an attempt's settlement is lost and its claim is reclaimed within the same round
-- **THEN** shaahid re-presents the same `Seal` and the loop does not re-perform that attempt's side effect
-
 ### Requirement: The Round Loop Runs End-To-End Under Agent-Backed Roles
 The round loop SHALL be drivable end to end by production, agent-backed Build and Review roles —
 not only scripted ones — together with an objective `Verification`, converging as suunta decides.
@@ -143,4 +117,4 @@ convergence SHALL remain suunta's, regardless of which role implementations are 
 
 #### Scenario: An agent-backed round loop converges
 - **WHEN** the round loop is driven by an agent-backed Builder and an agent-backed Reviewer with a verification that passes
-- **THEN** the loop converges as suunta decides, having built each round exactly once and honored the Verification verdict as the goal's satisfaction
+- **THEN** the loop converges as suunta decides, having honored the Verification verdict as the goal's satisfaction
