@@ -46,7 +46,10 @@ Note the handoff spec that seeded ringi drifts here ("workflow orchestrator", a
 `scripts/naming-guard.sh` fails if a banned word names a `struct`/`enum`/`trait`/`type`/`mod`
 in the Rust sources; it runs in the Definition of Done (`AGENTS.md`). It is deliberately
 high-precision (declarations only) so it does not false-positive on prose or CLI vocabulary;
-the soft cases above stay review-governed. `crates/ringi/tests/architecture.rs` (via the
-`tianheng` dev-dependency) mechanically enforces the seam rule's other half — that `suunta` is
-imported only from `crate::convergence`, and `pacta` only from `crate::registry` — and runs as
-part of `cargo test --workspace`.
+the soft cases above stay review-governed. The `ringi-governance` Tianheng gate mechanically
+enforces the seam rule's other half — that `suunta` is imported only from `crate::convergence`,
+`pacta` only from `crate::registry`, and `cadw` only from `crate::residual_ledger` — through
+`cargo run -p ringi-governance -- check` in the Definition of Done; its law is projected into
+`AGENTS.ringi-law.md`. The gate observes the library root (`src/lib.rs`); the binary root
+(`src/main.rs`) declares no seam module, so Tianheng does not judge the seam boundaries there and
+the seam rule in the binary stays review-governed.

@@ -244,11 +244,13 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 cargo deny check
+cargo run -p ringi-governance -- check --manifest-path Cargo.toml
 ./scripts/changelog-guard.sh
 cargo +1.88 build --workspace
 ./scripts/naming-guard.sh   # naming-worldview guard — see docs/domain-language.md
 ```
 
-CI (`.github/workflows/ci.yml`) runs the same gates on push and pull request. As the surface grows,
-the DoD gains the security tests (path traversal, symlink escape, secret redaction, argument
-injection — see `PROJECT.md` invariants) and running the app end to end on a fixture.
+CI (`.github/workflows/ci.yml`) runs the same gates on push and pull request; `ringi-governance`
+owns the seam-confinement law for the library root. As the surface grows, the DoD gains the
+security tests (path traversal, symlink escape, secret redaction, argument injection — see
+`PROJECT.md` invariants) and running the app end to end on a fixture.

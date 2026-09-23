@@ -41,3 +41,11 @@ jobs:
         uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check
+
+  governance:
+    name: Tianheng reaction
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: architecture constitution passes
+        run: cargo run -p ringi-governance -- check --manifest-path Cargo.toml

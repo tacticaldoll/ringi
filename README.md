@@ -72,6 +72,8 @@ reads a prompt on stdin and writes its answer to stdout.
 - `PROJECT.md` — vision, invariants, and non-goals.
 - `AGENTS.md` — operating protocol and Definition of Done.
 - `crates/ringi` — the application crate: library modules plus the `ringi` binary.
+- `crates/ringi-governance` — the unpublished Tianheng gate; its law is projected into
+  `AGENTS.ringi-law.md`.
 - `BACKLOG.md` — recorded decisions and deferred work.
 - `docs/domain-language.md` — the naming worldview and seam discipline.
 - `openspec/specs/` — shipped requirements.
