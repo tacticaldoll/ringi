@@ -174,6 +174,13 @@ coverage consumer. Any such advance happens in suunta's own repo, never inside a
 - **Executor consumer:** sandboxing, repository editing, verification commands, patch application,
   and any consumer of an approved archive require a separate change. They are not hidden inside
   this deliberation MVP.
+- **Retire the run-era `AgentRole` variants at the next minor release:** `AgentRole::Builder` and
+  `AgentRole::Reviewer` survive from the removed execution model. Nothing in the workspace
+  constructs or matches them — the only constructions are `Respondent`, `Arbitrator`, and
+  `ConditionEvaluator` in `deliberate_loop.rs` and the `agent.rs` tests, and no code matches on
+  `AgentRequest::role`. They stay for now only because `AgentRole` is a `pub enum` in the published
+  crate's `pub mod agent`, so removing a variant is a breaking change; drop both in the next minor
+  (0.x) release.
 - **Parallel deliberation:** blind parallel respondents, in-flight coverage, cancellation, and
   async scheduling remain deferred until latency or independence needs force them.
 - **Family candidates:** Freigabe, Dychwel, and Stoma remain unforced. A sequential dossier has no

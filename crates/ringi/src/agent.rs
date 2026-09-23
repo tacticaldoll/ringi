@@ -5,7 +5,7 @@
 //! it reports the exit code and best-effort structured output; whether that is acceptable is
 //! the caller's decision.
 //!
-//! Synchronous by design (v1 runs one run at a time); async is deferred until concurrency
+//! Synchronous by design (v1 runs one invocation at a time); async is deferred until concurrency
 //! forces it. The one security invariant not deferred: the agent is spawned as a program
 //! with arguments, never through a shell.
 
@@ -21,7 +21,8 @@ pub enum AgentRole {
     Respondent,
     Arbitrator,
     ConditionEvaluator,
-    // Legacy roles (removed in 8.3)
+    // Unused since the dossier pivot: nothing constructs these two. Kept only because this enum
+    // is public API of the published crate; removal is recorded in `BACKLOG.md`.
     Builder,
     Reviewer,
 }
