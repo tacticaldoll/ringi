@@ -73,14 +73,13 @@ fn minimal_base_env() -> Vec<(String, String)> {
 
 /// Spawn a child, tolerating a transient `ETXTBSY` under test.
 ///
-/// In production this is a single `spawn()` — ringi executes pre-existing Agent CLIs and
-/// verification programs, never a file it just wrote, so `ETXTBSY` ("text file busy") does not
-/// arise. The test suite, however, writes fake-agent/check scripts and executes them under a
-/// parallel harness: a concurrent test's fork can duplicate a writer's still-open fd to the
-/// program file (a fork child holds it until it execs), so a just-written script can briefly
-/// read as open-for-writing and `execve` returns `ETXTBSY`. That race is a property of the test
-/// setup, not the product, so the brief retry is compiled only under `cfg(test)`; the shipped
-/// spawn path stays a single unconditional attempt.
+/// In production this is a single `spawn()` — ringi executes pre-existing Agent CLIs, never a
+/// file it just wrote, so `ETXTBSY` ("text file busy") does not arise. The test suite, however,
+/// writes fake-agent scripts and executes them under a parallel harness: a concurrent test's fork
+/// can duplicate a writer's still-open fd to the program file (a fork child holds it until it
+/// execs), so a just-written script can briefly read as open-for-writing and `execve` returns
+/// `ETXTBSY`. That race is a property of the test setup, not the product, so the brief retry is
+/// compiled only under `cfg(test)`; the shipped spawn path stays a single unconditional attempt.
 fn spawn_resilient<F>(spawn: F) -> std::io::Result<std::process::Child>
 where
     F: Fn() -> std::io::Result<std::process::Child>,

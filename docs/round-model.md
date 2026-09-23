@@ -1,10 +1,10 @@
 # Round Model — Historical Execution Target
 
 **Status**: historical record, not current product direction. It documents the code-execution
-model that proved the family-composition bet. The active `reframe-ringi-deliberation` change makes
-one dossier deliberation the product boundary; it does not execute workspaces, apply patches, or
-introduce async/in-flight coverage. Do not use this document to justify new product work without a
-new OpenSpec change that re-evaluates the deliberation contract.
+model that proved the family-composition bet. The completed `reframe-ringi-deliberation` change
+made one dossier deliberation the product boundary; it does not execute workspaces, apply patches,
+or introduce async/in-flight coverage. Do not use this document to justify new product work without
+a new OpenSpec change that re-evaluates the deliberation contract.
 
 **The paradox it resolves**: the vision itself forbids "aligning early" by building the general
 product (force-then-extract, no central framework, don't pre-build). So *aligning with the

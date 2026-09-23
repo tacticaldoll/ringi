@@ -28,7 +28,7 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Create the default configuration and state store.
+    /// Create the dossier state store.
     Init,
 
     // Dossier commands
@@ -160,7 +160,7 @@ fn open_registry() -> anyhow::Result<ringi::registry::SqliteRegistry> {
         .with_context(|| format!("opening registry {}", path.display()))
 }
 
-/// Provision the durable store and scaffold the config, neither destroying existing data.
+/// Provision the durable store, without destroying existing data.
 fn init_command() -> anyhow::Result<()> {
     open_dossier_store()?;
     Ok(())

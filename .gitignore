@@ -29,6 +29,5 @@
 /.roo/
 /.windsurf/
 *.rs.bk
-# ringi runtime artifacts (created by `ringi init`/`ringi run` in a working directory)
+# ringi runtime artifacts (created by `ringi init` and the dossier commands in a working directory)
 /.ringi/
-/ringi.toml
