@@ -9,7 +9,7 @@
 //! vectors remain the sole durable source of truth. `apply` and `apply_condition_move` each build
 //! their own `Ledger`, scoped to their own target namespace (`dissent:`/`risk:`/`question:` vs
 //! `condition:`) — the two never interact, since a `Move` batch never references a condition and
-//! a `ConditionMove` never references the other three. Per `docs/naming.md`'s seam rule, `cadw`'s
+//! a `ConditionMove` never references the other three. Per `docs/domain-language.md`'s seam rule, `cadw`'s
 //! vocabulary (`TargetId`, `Ledger`, `Move`, `Validator`, `Rejection`) is confined to this module
 //! and never names a ringi domain type.
 

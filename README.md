@@ -8,6 +8,8 @@ and a human records the final decision.
 draft → submit → answer → arbitrate → decide → archive
 ```
 
+## Scope
+
 Agent CLIs are opaque respondents. Ringi supplies bounded natural-language context on stdin and
 records their stdout answers; it does not govern whether they use OpenSpec or any other internal
 method. Ringi itself performs no workspace mutation, patch application, or downstream execution.
@@ -69,10 +71,16 @@ reads a prompt on stdin and writes its answer to stdout.
 
 - `PROJECT.md` — vision, invariants, and non-goals.
 - `AGENTS.md` — operating protocol and Definition of Done.
+- `crates/ringi` — the application crate: library modules plus the `ringi` binary.
 - `BACKLOG.md` — recorded decisions and deferred work.
-- `docs/naming.md` — the naming worldview and seam discipline.
+- `docs/domain-language.md` — the naming worldview and seam discipline.
 - `openspec/specs/` — shipped requirements.
 - `CHANGELOG.md` — release history.
+
+## Contributing
+
+`AGENTS.md` is the contributor and agent guide, including the Definition of Done;
+`docs/development-flow.md` is the short checklist.
 
 ## License
 

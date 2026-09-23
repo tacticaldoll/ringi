@@ -11,10 +11,11 @@ Ringi does not execute an approved decision. It does not edit a workspace, run r
 apply patches, or operate OpenSpec. Those may become consumers of an approved dossier only when a
 separate product need forces their shape.
 
-## Positioning: a consumer that composes, not a monolith
+## Product Positioning
 
-Ringi is an application leaf. It owns its Agent-CLI deliberation domain and composes published
-family primitives only where they honestly own a mechanic:
+A consumer that composes, not a monolith. Ringi is an application leaf. It owns its Agent-CLI
+deliberation domain and composes published family primitives only where they honestly own a
+mechanic:
 
 ```text
 durable invocation lifecycle + recovery -> pacta
@@ -69,7 +70,7 @@ consumer need exists.
 
 ## References
 
-- Naming worldview: `docs/naming.md`
+- Naming worldview: `docs/domain-language.md`
 - Operating protocol and Definition of Done: `AGENTS.md`
 - Product decisions and deferred work: `BACKLOG.md`
 - Shipped requirements: `openspec/specs/`

@@ -170,7 +170,7 @@ that *one context's language cannot support the whole problem*.
 The family's answer is not the negation of domain-driven design; it is its **mature form**:
 
 - each brick is a **bounded context** — pacta (contract), suunta (navigation), shaahid
-  (witness) — its register (see `docs/naming.md`) the *ubiquitous language*;
+  (witness) — its register (see `docs/domain-language.md`) the *ubiquitous language*;
 - the **seam** (`reconcile::seam`) is the *anti-corruption layer* / context map;
 - the **repo is the boundary.** A module boundary inside one crate erodes (semantic drift
   precedes architectural drift); a separate published artifact is a *physical* boundary that

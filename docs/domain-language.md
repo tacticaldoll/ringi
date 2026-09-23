@@ -1,4 +1,4 @@
-# Naming worldview
+# Domain Language
 
 Ringi is an application that **composes** three sibling libraries. It is uniquely exposed to
 a semantic pull — queue-runtime speak — that, if adopted, drags a thin composer back toward

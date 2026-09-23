@@ -1,4 +1,4 @@
-//! Mechanizes the second half of `docs/naming.md`'s seam rule: `naming-guard.sh` checks that a
+//! Mechanizes the second half of `docs/domain-language.md`'s seam rule: `naming-guard.sh` checks that a
 //! banned generic word never names a declaration; this checks that a brick crate's own imports
 //! stay confined to its seam module. Runs as part of `cargo test --workspace`, so a future change
 //! that lets `suunta` leak outside `crate::convergence` fails the existing Definition of Done gate
@@ -14,7 +14,7 @@ fn constitution() -> Constitution {
             .confine_external_crate("suunta")
             .because(
                 "suunta's vocabulary (Bearing, Sigil, Sounding, ...) is confined to the \
-                 convergence seam and never names a ringi domain type — see docs/naming.md's \
+                 convergence seam and never names a ringi domain type — see docs/domain-language.md's \
                  seam rule",
             ),
     )
@@ -38,7 +38,7 @@ fn pacta_constitution() -> Constitution {
             .because(
                 "pacta's vocabulary (Pact, Claim, Retainer, Registry, lifecycle, ...) is \
                  confined to the registry seam and never names a ringi domain type — see \
-                 docs/naming.md's seam rule",
+                 docs/domain-language.md's seam rule",
             ),
     )
 }
@@ -57,7 +57,7 @@ fn cadw_constitution() -> Constitution {
             .because(
                 "cadw's vocabulary (TargetId, Ledger, Move, Validator, Rejection, ...) is \
                  confined to the residual-ledger seam and never names a ringi domain type — see \
-                 docs/naming.md's seam rule",
+                 docs/domain-language.md's seam rule",
             ),
     )
 }
