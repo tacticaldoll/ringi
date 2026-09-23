@@ -10,14 +10,27 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: build / test / clippy / fmt / doc / naming-guard
+      - name: build / test / clippy / fmt / doc
         run: |
           cargo build --workspace
           cargo test --workspace
           cargo clippy --workspace --all-targets -- -D warnings
           cargo fmt --all --check
           RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
-          ./scripts/naming-guard.sh
+      - name: changelog ledger
+        run: ./scripts/changelog-guard.sh
+      - name: naming-worldview guard
+        run: ./scripts/naming-guard.sh
+
+  msrv:
+    name: MSRV (1.88)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: install and select the declared MSRV toolchain
+        uses: dtolnay/rust-toolchain@1.88
+      - name: workspace builds on the declared MSRV
+        run: cargo +1.88 build --workspace
 
   supply-chain:
     name: Supply chain (cargo-deny)

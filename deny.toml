@@ -1,7 +1,5 @@
 # cargo-deny owns resolved supply-chain policy for the workspace.
 # Run: `cargo deny check`.
-#
-# Family dependencies are published on crates.io; no Git source exception is required.
 
 [advisories]
 version = 2
@@ -9,6 +7,8 @@ ignore = []
 
 [licenses]
 version = 2
+# Family base: MIT, Apache-2.0, Unicode-3.0. Append a license only for a resolved dependency that
+# needs it.
 allow = ["MIT", "Apache-2.0", "Unicode-3.0", "BSD-3-Clause"]
 confidence-threshold = 0.9
 

@@ -3,7 +3,7 @@
 //! Ringi owns no convergence mechanism of its own. It projects a revision's residual —
 //! every dissent, every risk, and every question — onto a suunta `Bearing` of targets and
 //! reports a per-target satisfaction verdict; suunta computes the residual and decides
-//! whether the dossier has converged. Per `docs/naming.md`'s seam rule, suunta's vocabulary
+//! whether the dossier has converged. Per `docs/domain-language.md`'s seam rule, suunta's vocabulary
 //! (`Bearing`, `Sigil`, `Sounding`, …) is confined to this module and never names a ringi
 //! domain type.
 //!

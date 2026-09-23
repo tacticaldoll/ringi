@@ -9,6 +9,7 @@ repository.workspace = true
 readme = "../../README.md"
 keywords.workspace = true
 categories.workspace = true
+publish = true
 
 [dependencies]
 pacta.workspace = true

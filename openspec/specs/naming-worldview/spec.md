@@ -5,13 +5,13 @@
 Ringi's authored naming register, the rule confining brick vocabulary to the seam, and the
 executable guard against queue-runtime / CQRS drift — because semantic drift precedes
 architectural drift, and a queue-runtime name is the first visible sign of re-monolithing.
-See `docs/naming.md`.
+See `docs/domain-language.md`.
 
 ## Requirements
 
 ### Requirement: Ringi Has A Native Naming Register
 Ringi SHALL name its own domain in a clear deliberative-governance register (the arc
-propose → review → verify → sanction → approve), documented in `docs/naming.md`. Brick
+propose → review → verify → sanction → approve), documented in `docs/domain-language.md`. Brick
 vocabulary (pacta `Pact`/`Registry`/`release`, suunta `Bearing`/`Course`, shaahid
 `Deed`/`witness`) SHALL appear only in the thin seam adapters that call those crates, and
 SHALL NOT name ringi's own domain types or modules. Ringi is an application, so clarity

@@ -6,7 +6,7 @@
 //! claim fulfilled or breached. A claim's lease durably distinguishes "attempted, not yet
 //! confirmed settled" from "settled" — the checkpoint a single sequential process needs to
 //! recover correctly from a crash between invoking the agent and committing the result. Per
-//! `docs/naming.md`'s seam rule, pacta's vocabulary (`Pact`, `Claim`, `Retainer`, `Registry`,
+//! `docs/domain-language.md`'s seam rule, pacta's vocabulary (`Pact`, `Claim`, `Retainer`, `Registry`,
 //! `lifecycle`) is confined to this module and never names a ringi domain type: the public
 //! surface here returns [`InvocationTicket`], never a raw `pacta::Retainer`.
 //!
