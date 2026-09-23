@@ -2,7 +2,7 @@
 
 ## 1. Apply
 
-- [ ] 1.1 Delete `sync_specs.py` and verify `git grep sync_specs` finds no caller
+- [x] 1.1 Delete `sync_specs.py` and verify `git grep sync_specs` finds no caller
 
 ## 2. Sync
 
