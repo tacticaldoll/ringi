@@ -72,5 +72,6 @@ consumer need exists.
 
 - Naming worldview: `docs/domain-language.md`
 - Operating protocol and Definition of Done: `AGENTS.md`
+- Accepted architecture law, generated: `AGENTS.ringi-law.md`
 - Product decisions and deferred work: `BACKLOG.md`
 - Shipped requirements: `openspec/specs/`

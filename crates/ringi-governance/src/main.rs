@@ -1,0 +1,270 @@
+//! Executable architectural governance for the ringi workspace.
+//!
+//! Ringi is an application: it performs I/O by design and carries no sans-I/O teeth. What the gate
+//! holds is the seam discipline of `docs/domain-language.md` — each composed brick's vocabulary is
+//! confined to its seam module — and the gate's own independence from the graph it judges.
+//!
+//! Tianheng judges a module boundary per compilation root and only in a root that contains the
+//! module, so the seam boundaries observe the library root (`src/lib.rs`) and not the binary root
+//! (`src/main.rs`), which declares no seam module. The seam rule in the binary is review-governed.
+
+#![forbid(unsafe_code)]
+
+use std::{env, process::ExitCode};
+
+use tianheng::prelude::*;
+
+const SUUNTA_SEAM_REASON: &str = "suunta's vocabulary (Bearing, Sigil, Sounding, ...) is confined to the convergence seam and never names a ringi domain type — see docs/domain-language.md's seam rule";
+const PACTA_SEAM_REASON: &str = "pacta's vocabulary (Pact, Claim, Retainer, Registry, lifecycle, ...) is confined to the registry seam and never names a ringi domain type — see docs/domain-language.md's seam rule";
+const CADW_SEAM_REASON: &str = "cadw's vocabulary (TargetId, Ledger, Move, Validator, Rejection, ...) is confined to the residual-ledger seam and never names a ringi domain type — see docs/domain-language.md's seam rule";
+const GOVERNANCE_REASON: &str = "the governance gate must stay independent of the workspace graph it judges: its normal dependencies are Tianheng's composed adopter surface alone, never an individual governance instrument or a workspace crate under judgment.";
+
+fn constitution() -> Constitution {
+    Constitution::new("ringi")
+        .boundary(
+            ModuleBoundary::in_crate("ringi")
+                .module("crate::convergence")
+                .confine_external_crate("suunta")
+                .because(SUUNTA_SEAM_REASON),
+        )
+        .boundary(
+            ModuleBoundary::in_crate("ringi")
+                .module("crate::registry")
+                .confine_external_crate("pacta")
+                .because(PACTA_SEAM_REASON),
+        )
+        .boundary(
+            ModuleBoundary::in_crate("ringi")
+                .module("crate::residual_ledger")
+                .confine_external_crate("cadw")
+                .because(CADW_SEAM_REASON),
+        )
+        .boundary(
+            CrateBoundary::crate_("ringi-governance")
+                .restrict_dependencies_to(["tianheng"])
+                .because(GOVERNANCE_REASON),
+        )
+}
+
+fn main() -> ExitCode {
+    tianheng::run(&constitution(), env::args().collect::<Vec<_>>())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        fs,
+        path::{Path, PathBuf},
+    };
+
+    use super::*;
+
+    const LAW_PROJECTION_PREAMBLE: &str = "\
+# Ringi Tianheng Law Projection
+
+This file is generated from `constitution()` in `crates/ringi-governance/src/main.rs`.
+The Rust declaration is authoritative; do not edit the projection by hand.
+Regenerate it with `BLESS=1 cargo test -p ringi-governance law_projection_is_fresh`.
+
+";
+
+    fn workspace_root() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+    }
+
+    #[test]
+    fn current_workspace_satisfies_constitution() {
+        GovernanceTest::for_constitution(constitution())
+            .with_manifest_dir(workspace_root())
+            .assert_clean();
+    }
+
+    #[test]
+    fn every_workspace_crate_is_covered() {
+        GovernanceTest::for_constitution(constitution())
+            .with_manifest_dir(workspace_root())
+            .assert_all_workspace_members_covered();
+    }
+
+    #[test]
+    fn law_projection_is_fresh() {
+        GovernanceTest::for_constitution(constitution())
+            .with_manifest_dir(workspace_root())
+            .assert_projection_fresh_with_preamble("AGENTS.ringi-law.md", LAW_PROJECTION_PREAMBLE);
+    }
+
+    #[test]
+    fn suunta_outside_the_convergence_seam_is_rejected() {
+        assert_seam_violation("suunta", "convergence", "Bearing");
+    }
+
+    #[test]
+    fn pacta_outside_the_registry_seam_is_rejected() {
+        assert_seam_violation("pacta", "registry", "Pact");
+    }
+
+    #[test]
+    fn cadw_outside_the_residual_ledger_seam_is_rejected() {
+        assert_seam_violation("cadw", "residual_ledger", "Ledger");
+    }
+
+    #[test]
+    fn brick_imports_inside_their_seams_stay_clean() {
+        let workspace = TempWorkspace::new("ringi-governance-seams-clean");
+        workspace.write_ringi(&[
+            ("convergence", "use suunta::Bearing;\n"),
+            ("registry", "use pacta::Pact;\n"),
+            ("residual_ledger", "use cadw::Ledger;\n"),
+            ("dossier", "pub struct Dossier;\n"),
+        ]);
+
+        let outcome = workspace.outcome();
+        assert!(
+            matches!(outcome, Outcome::Clean(_)),
+            "brick imports inside their seams must raise no violation: {outcome:?}"
+        );
+    }
+
+    #[test]
+    fn governance_dependency_beyond_tianheng_is_rejected() {
+        let workspace = TempWorkspace::new("ringi-governance-extra-dependency");
+        workspace.write_ringi(&[]);
+        workspace.write_package(
+            "ringi-governance",
+            "[dependencies]\ntianheng = { path = \"../tianheng\" }\nsuunta = { path = \"../suunta\" }\n",
+            &[("lib.rs", "")],
+        );
+
+        let report = workspace.violations();
+        assert!(
+            report.violations.iter().any(|violation| {
+                violation.target() == "ringi-governance" && violation.finding == "suunta"
+            }),
+            "expected the governance dependency boundary to fire: {report:?}"
+        );
+    }
+
+    /// Place a brick import in `dossier`, outside the brick's `seam`, while the seam itself imports
+    /// the brick legitimately; exactly the out-of-seam import must fire.
+    fn assert_seam_violation(brick: &str, seam: &str, item: &str) {
+        let workspace = TempWorkspace::new(&format!("ringi-governance-{brick}-leak"));
+        let seam_source = format!("use {brick}::{item};\n");
+        let leak_source = format!("use {brick}::{item};\npub struct Dossier;\n");
+        workspace.write_ringi(&[
+            (seam, seam_source.as_str()),
+            ("dossier", leak_source.as_str()),
+        ]);
+
+        let report = workspace.violations();
+        assert!(
+            report.violations.iter().any(|violation| {
+                violation.target() == brick && violation.finding == "crate::dossier"
+            }),
+            "expected the {brick} seam boundary to fire for crate::dossier: {report:?}"
+        );
+    }
+
+    /// A scratch workspace holding stand-ins for the three bricks, the ringi application crate with
+    /// the modules a test writes, and the governance crate, so every boundary has a real target.
+    struct TempWorkspace {
+        path: PathBuf,
+    }
+
+    impl TempWorkspace {
+        fn new(name: &str) -> Self {
+            let path = env::temp_dir().join(format!("{name}-{}", std::process::id()));
+            if path.exists() {
+                fs::remove_dir_all(&path).expect("stale temporary workspace should be removable");
+            }
+            let workspace = Self { path };
+            for brick in ["tianheng", "suunta", "pacta", "cadw"] {
+                workspace.write_package(
+                    brick,
+                    "",
+                    &[(
+                        "lib.rs",
+                        "pub struct Bearing;\npub struct Pact;\npub struct Ledger;\n",
+                    )],
+                );
+            }
+            workspace.write_package(
+                "ringi-governance",
+                "[dependencies]\ntianheng = { path = \"../tianheng\" }\n",
+                &[("lib.rs", "")],
+            );
+            fs::write(
+                workspace.path.join("Cargo.toml"),
+                "[workspace]\nresolver = \"2\"\nmembers = [\"tianheng\", \"suunta\", \"pacta\", \"cadw\", \"ringi\", \"ringi-governance\"]\n",
+            )
+            .expect("workspace manifest should be writable");
+            workspace
+        }
+
+        /// Write the ringi crate with every seam module present (empty unless given) plus the
+        /// given extra modules.
+        fn write_ringi(&self, modules: &[(&str, &str)]) {
+            let mut names = vec!["convergence", "registry", "residual_ledger"];
+            for (module, _) in modules {
+                if !names.contains(module) {
+                    names.push(module);
+                }
+            }
+            let lib = names
+                .iter()
+                .map(|module| format!("pub mod {module};\n"))
+                .collect::<String>();
+            let mut sources = vec![("lib.rs".to_owned(), lib)];
+            for module in &names {
+                let body = modules
+                    .iter()
+                    .find(|(name, _)| name == module)
+                    .map(|(_, body)| (*body).to_owned())
+                    .unwrap_or_default();
+                sources.push((format!("{module}.rs"), body));
+            }
+            let sources = sources
+                .iter()
+                .map(|(file, body)| (file.as_str(), body.as_str()))
+                .collect::<Vec<_>>();
+            self.write_package(
+                "ringi",
+                "[dependencies]\nsuunta = { path = \"../suunta\" }\npacta = { path = \"../pacta\" }\ncadw = { path = \"../cadw\" }\n",
+                &sources,
+            );
+        }
+
+        fn outcome(&self) -> Outcome {
+            tianheng::check_constitution(&constitution(), &self.path.join("Cargo.toml"))
+        }
+
+        fn violations(&self) -> Report {
+            match self.outcome() {
+                Outcome::Violations(report) => report,
+                other => panic!("expected violations, got {other:?}"),
+            }
+        }
+
+        fn write_package(&self, name: &str, dependencies: &str, sources: &[(&str, &str)]) {
+            let package = self.path.join(name);
+            let _ = fs::remove_dir_all(&package);
+            fs::create_dir_all(package.join("src")).expect("package source dir should be writable");
+            fs::write(
+                package.join("Cargo.toml"),
+                format!(
+                    "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n{dependencies}"
+                ),
+            )
+            .expect("package manifest should be writable");
+            for (file, source) in sources {
+                fs::write(package.join("src").join(file), source)
+                    .expect("package source should be writable");
+            }
+        }
+    }
+
+    impl Drop for TempWorkspace {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+}

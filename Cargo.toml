@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/ringi"]
+members = ["crates/ringi", "crates/ringi-governance"]
 
 [workspace.package]
 version = "0.1.0"
@@ -27,4 +27,5 @@ anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
+tianheng = "0.6.1"
 wait-timeout = "0.2"
