@@ -50,6 +50,8 @@ the soft cases above stay review-governed. The `ringi-governance` Tianheng gate 
 enforces the seam rule's other half — that `suunta` is imported only from `crate::convergence`,
 `pacta` only from `crate::registry`, and `cadw` only from `crate::residual_ledger` — through
 `cargo run -p ringi-governance -- check` in the Definition of Done; its law is projected into
-`AGENTS.ringi-law.md`. The gate observes the library root (`src/lib.rs`); the binary root
-(`src/main.rs`) declares no seam module, so Tianheng does not judge the seam boundaries there and
-the seam rule in the binary stays review-governed.
+`AGENTS.ringi-law.md`. The gate observes the library root (`src/lib.rs`) and the binary root
+(`src/main.rs`); in each root a brick is imported only from a module at its seam's path, and the
+binary root declares no seam module of its own, so a `use` import of a brick there is outside its
+seam. A seam-named module declared by the binary itself would be permitted, so adding one stays
+review-governed.

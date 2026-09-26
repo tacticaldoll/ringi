@@ -4,9 +4,10 @@
 //! holds is the seam discipline of `docs/domain-language.md` — each composed brick's vocabulary is
 //! confined to its seam module — and the gate's own independence from the graph it judges.
 //!
-//! Tianheng judges a module boundary per compilation root and only in a root that contains the
-//! module, so the seam boundaries observe the library root (`src/lib.rs`) and not the binary root
-//! (`src/main.rs`), which declares no seam module. The seam rule in the binary is review-governed.
+//! Tianheng judges an external-crate confinement in every compiled root, so the seam boundaries
+//! observe both the library root (`src/lib.rs`) and the binary root (`src/main.rs`). In each root
+//! a brick may be imported only from a module at its seam's path; the binary root declares none,
+//! so a `use` import of a brick anywhere it reaches is outside its seam.
 
 #![forbid(unsafe_code)]
 
@@ -14,9 +15,9 @@ use std::{env, process::ExitCode};
 
 use tianheng::prelude::*;
 
-const SUUNTA_SEAM_REASON: &str = "suunta's vocabulary (Bearing, Sigil, Sounding, ...) enters ringi's library root only through the convergence seam: no module outside `crate::convergence` makes a `use` import of suunta. Coverage is partial: the binary root (src/main.rs), a fully qualified inline path, an `extern crate` declaration, a `use` inside a macro body, and a re-export through the seam are invisible to this import scan, so whether a ringi domain type names suunta's vocabulary stays review-governed — see docs/domain-language.md's seam rule";
-const PACTA_SEAM_REASON: &str = "pacta's vocabulary (Pact, Claim, Retainer, Registry, lifecycle, ...) enters ringi's library root only through the registry seam: no module outside `crate::registry` makes a `use` import of pacta. Coverage is partial: the binary root (src/main.rs), a fully qualified inline path, an `extern crate` declaration, a `use` inside a macro body, and a re-export through the seam are invisible to this import scan, so whether a ringi domain type names pacta's vocabulary stays review-governed — see docs/domain-language.md's seam rule";
-const CADW_SEAM_REASON: &str = "cadw's vocabulary (TargetId, Ledger, Move, Validator, Rejection, ...) enters ringi's library root only through the residual-ledger seam: no module outside `crate::residual_ledger` makes a `use` import of cadw. Coverage is partial: the binary root (src/main.rs), a fully qualified inline path, an `extern crate` declaration, a `use` inside a macro body, and a re-export through the seam are invisible to this import scan, so whether a ringi domain type names cadw's vocabulary stays review-governed — see docs/domain-language.md's seam rule";
+const SUUNTA_SEAM_REASON: &str = "suunta's vocabulary (Bearing, Sigil, Sounding, ...) enters ringi's library and binary roots only through the convergence seam: in each of those roots, no module outside `crate::convergence` makes a `use` import of suunta. Coverage is partial: a module the binary root itself declares at the seam's path is permitted like the library's seam, and a fully qualified inline path, an `extern crate` declaration, a `use` inside a macro body, and a re-export through the seam are invisible to this import scan, so whether a ringi domain type names suunta's vocabulary stays review-governed — see docs/domain-language.md's seam rule";
+const PACTA_SEAM_REASON: &str = "pacta's vocabulary (Pact, Claim, Retainer, Registry, lifecycle, ...) enters ringi's library and binary roots only through the registry seam: in each of those roots, no module outside `crate::registry` makes a `use` import of pacta. Coverage is partial: a module the binary root itself declares at the seam's path is permitted like the library's seam, and a fully qualified inline path, an `extern crate` declaration, a `use` inside a macro body, and a re-export through the seam are invisible to this import scan, so whether a ringi domain type names pacta's vocabulary stays review-governed — see docs/domain-language.md's seam rule";
+const CADW_SEAM_REASON: &str = "cadw's vocabulary (TargetId, Ledger, Move, Validator, Rejection, ...) enters ringi's library and binary roots only through the residual-ledger seam: in each of those roots, no module outside `crate::residual_ledger` makes a `use` import of cadw. Coverage is partial: a module the binary root itself declares at the seam's path is permitted like the library's seam, and a fully qualified inline path, an `extern crate` declaration, a `use` inside a macro body, and a re-export through the seam are invisible to this import scan, so whether a ringi domain type names cadw's vocabulary stays review-governed — see docs/domain-language.md's seam rule";
 const GOVERNANCE_REASON: &str = "the governance gate must stay independent of the workspace graph it judges: its normal dependencies are Tianheng's composed adopter surface alone, never an individual governance instrument or a workspace crate under judgment.";
 
 fn constitution() -> Constitution {
@@ -122,6 +123,46 @@ Regenerate it with `BLESS=1 cargo test -p ringi-governance law_projection_is_fre
         assert!(
             matches!(outcome, Outcome::Clean(_)),
             "brick imports inside their seams must raise no violation: {outcome:?}"
+        );
+    }
+
+    /// The binary root declares no seam module, so a brick import in it, or in a module it
+    /// reaches, is outside every seam; the library's seams stay clean beside it.
+    #[test]
+    fn brick_imports_in_the_binary_root_are_rejected() {
+        let workspace = TempWorkspace::new("ringi-governance-binary-root-leak");
+        workspace.write_ringi(&[("convergence", "use suunta::Bearing;\n")]);
+        workspace.write_source(
+            "ringi",
+            "main.rs",
+            "mod cli;\n\nuse cadw::Ledger;\nuse suunta::Bearing;\n\nfn main() {}\n",
+        );
+        workspace.write_source("ringi", "cli.rs", "use pacta::Pact;\n");
+
+        let report = workspace.violations();
+        for (brick, finding, file) in [
+            ("suunta", "crate", "main.rs"),
+            ("cadw", "crate", "main.rs"),
+            ("pacta", "crate::cli", "cli.rs"),
+        ] {
+            assert!(
+                report.violations.iter().any(|violation| {
+                    violation.target() == brick
+                        && violation.finding == finding
+                        && violation
+                            .file
+                            .as_deref()
+                            .is_some_and(|path| path.ends_with(file))
+                }),
+                "expected the {brick} seam boundary to fire for {finding} in the binary root: {report:?}"
+            );
+        }
+        assert!(
+            !report
+                .violations
+                .iter()
+                .any(|violation| violation.finding == "crate::convergence"),
+            "the library's convergence seam must stay clean: {report:?}"
         );
     }
 
@@ -231,6 +272,12 @@ Regenerate it with `BLESS=1 cargo test -p ringi-governance law_projection_is_fre
                 "[dependencies]\nsuunta = { path = \"../suunta\" }\npacta = { path = \"../pacta\" }\ncadw = { path = \"../cadw\" }\n",
                 &sources,
             );
+        }
+
+        /// Add one source file to a package already written.
+        fn write_source(&self, package: &str, file: &str, source: &str) {
+            fs::write(self.path.join(package).join("src").join(file), source)
+                .expect("package source should be writable");
         }
 
         fn outcome(&self) -> Outcome {

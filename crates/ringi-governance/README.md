@@ -9,9 +9,9 @@ to `convergence`, cadw's to `residual_ledger` — its own dependency independenc
 coverage, and the accepted constitution's generated projection, `AGENTS.ringi-law.md`. Ringi does
 I/O by design, so the gate carries no sans-I/O teeth.
 
-The seam boundaries observe the library root (`src/lib.rs`). Tianheng judges a module boundary only
-in a compilation root that contains the module, so the binary root (`src/main.rs`) is not observed;
-the seam rule there is review-governed.
+The seam boundaries observe the library root (`src/lib.rs`) and the binary root (`src/main.rs`):
+Tianheng judges an external-crate confinement in every compiled root: in each root a brick may be
+imported only from a module at its seam's path, and the binary root declares no such module.
 
 Run it from the workspace root:
 
