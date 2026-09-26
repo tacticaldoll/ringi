@@ -19,6 +19,8 @@ jobs:
           RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
       - name: changelog ledger
         run: ./scripts/changelog-guard.sh
+      - name: openspec specs and changes
+        run: npx -y @fission-ai/openspec@1.13.2 validate --all --strict --no-interactive
       - name: naming-worldview guard
         run: ./scripts/naming-guard.sh
 
