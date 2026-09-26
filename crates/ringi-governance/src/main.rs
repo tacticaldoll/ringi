@@ -178,6 +178,29 @@ Regenerate it with `BLESS=1 cargo test -p ringi-governance law_projection_is_fre
         );
     }
 
+    /// The seam reasons leave two routes into the binary root unobserved: a fully qualified
+    /// inline path and a re-export through the library's seam. Both stay clean, so a Tianheng
+    /// release that starts observing either one fails here and the reasons are revisited.
+    #[test]
+    fn inline_paths_and_seam_reexports_in_the_binary_root_stay_unobserved() {
+        let workspace = TempWorkspace::new("ringi-governance-binary-root-unobserved");
+        workspace.write_ringi(&[("convergence", "pub use suunta::Bearing;\n")]);
+        workspace.write_source(
+            "ringi",
+            "main.rs",
+            "use ringi::convergence::Bearing;\n\n\
+             fn inline() -> Option<suunta::Bearing> {\n    None\n}\n\n\
+             fn main() {\n    let _: Option<Bearing> = inline();\n}\n",
+        );
+
+        let outcome = workspace.outcome();
+        assert!(
+            matches!(outcome, Outcome::Clean(_)),
+            "an inline path and a seam re-export in the binary root must raise no violation: \
+             {outcome:?}"
+        );
+    }
+
     /// A `Command` built in the agent seam fires whether it is reached through an aliased `use`
     /// import or written fully qualified.
     #[test]
