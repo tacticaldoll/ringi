@@ -29,6 +29,13 @@ Regenerate it with `BLESS=1 cargo test -p ringi-governance law_projection_is_fre
 - **rule**: external crate confined to module (external_crate: cadw)
 - **kind**: module · **severity**: enforce · **crate**: ringi
 
+### `ringi::crate::agent` (module)
+
+> the agent seam composes the shared subprocess primitive in `crate::exec` rather than hand-rolling a spawn path: in the library root, no module in `crate::agent`'s subtree, its test modules included, calls a function under `std::process::Command` (such as `Command::new`), whether written fully qualified or through a `use` import or alias. A `type` alias or `pub use` of that path inside the subtree also reacts, fail-closed, wherever a glob import can reach it, such as a tests module's `use super::*`. Coverage is partial: otherwise a mention as a type or value does not react; a method called on a `Command` value, a spawn through any other API, and a call a macro constructs from fragments are not observed; modules outside `crate::agent`, and the binary root, which declares no agent module, are not judged by this boundary; so what `crate::exec` itself guarantees (program and arguments, never a shell; a minimized environment; a timeout) stays test- and review-governed
+
+- **rule**: inline symbol path confined to module (confined_prefix: std::process::Command)
+- **kind**: module · **severity**: enforce · **crate**: ringi
+
 ### `ringi-governance` (crate)
 
 > the governance gate must stay independent of the workspace graph it judges: its normal dependencies are Tianheng's composed adopter surface alone, never an individual governance instrument or a workspace crate under judgment.

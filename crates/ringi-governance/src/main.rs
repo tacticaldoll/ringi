@@ -1,8 +1,13 @@
 //! Executable architectural governance for the ringi workspace.
 //!
-//! Ringi is an application: it performs I/O by design and carries no sans-I/O teeth. What the gate
-//! holds is the seam discipline of `docs/domain-language.md` — each composed brick's vocabulary is
-//! confined to its seam module — and the gate's own independence from the graph it judges.
+//! Ringi is an application: it performs I/O by design and carries no sans-I/O teeth. The gate
+//! holds three things:
+//!
+//! - the seam discipline of `docs/domain-language.md`, under which each composed brick's
+//!   vocabulary is confined to its seam module;
+//! - the agent seam's use of the `crate::exec` subprocess primitive, with no call under
+//!   `std::process::Command` of its own in the library root; and
+//! - the gate's own independence from the graph it judges.
 //!
 //! Tianheng judges an external-crate confinement in every compiled root, so the seam boundaries
 //! observe both the library root (`src/lib.rs`) and the binary root (`src/main.rs`). In each root
@@ -18,6 +23,7 @@ use tianheng::prelude::*;
 const SUUNTA_SEAM_REASON: &str = "suunta's vocabulary (Bearing, Sigil, Sounding, ...) enters ringi's library and binary roots only through the convergence seam: in each of those roots, no module outside `crate::convergence` makes a `use` import of suunta. Coverage is partial: a module the binary root itself declares at the seam's path is permitted like the library's seam, and a fully qualified inline path, an `extern crate` declaration, a `use` inside a macro body, and a re-export through the seam are invisible to this import scan, so whether a ringi domain type names suunta's vocabulary stays review-governed — see docs/domain-language.md's seam rule";
 const PACTA_SEAM_REASON: &str = "pacta's vocabulary (Pact, Claim, Retainer, Registry, lifecycle, ...) enters ringi's library and binary roots only through the registry seam: in each of those roots, no module outside `crate::registry` makes a `use` import of pacta. Coverage is partial: a module the binary root itself declares at the seam's path is permitted like the library's seam, and a fully qualified inline path, an `extern crate` declaration, a `use` inside a macro body, and a re-export through the seam are invisible to this import scan, so whether a ringi domain type names pacta's vocabulary stays review-governed — see docs/domain-language.md's seam rule";
 const CADW_SEAM_REASON: &str = "cadw's vocabulary (TargetId, Ledger, Move, Validator, Rejection, ...) enters ringi's library and binary roots only through the residual-ledger seam: in each of those roots, no module outside `crate::residual_ledger` makes a `use` import of cadw. Coverage is partial: a module the binary root itself declares at the seam's path is permitted like the library's seam, and a fully qualified inline path, an `extern crate` declaration, a `use` inside a macro body, and a re-export through the seam are invisible to this import scan, so whether a ringi domain type names cadw's vocabulary stays review-governed — see docs/domain-language.md's seam rule";
+const AGENT_SPAWN_REASON: &str = "the agent seam composes the shared subprocess primitive in `crate::exec` rather than hand-rolling a spawn path: in the library root, no module in `crate::agent`'s subtree, its test modules included, calls a function under `std::process::Command` (such as `Command::new`), whether written fully qualified or through a `use` import or alias. A `type` alias or `pub use` of that path inside the subtree also reacts, fail-closed, wherever a glob import can reach it, such as a tests module's `use super::*`. Coverage is partial: otherwise a mention as a type or value does not react; a method called on a `Command` value, a spawn through any other API, and a call a macro constructs from fragments are not observed; modules outside `crate::agent`, and the binary root, which declares no agent module, are not judged by this boundary; so what `crate::exec` itself guarantees (program and arguments, never a shell; a minimized environment; a timeout) stays test- and review-governed";
 const GOVERNANCE_REASON: &str = "the governance gate must stay independent of the workspace graph it judges: its normal dependencies are Tianheng's composed adopter surface alone, never an individual governance instrument or a workspace crate under judgment.";
 
 fn constitution() -> Constitution {
@@ -39,6 +45,12 @@ fn constitution() -> Constitution {
                 .module("crate::residual_ledger")
                 .confine_external_crate("cadw")
                 .because(CADW_SEAM_REASON),
+        )
+        .boundary(
+            ModuleBoundary::in_crate("ringi")
+                .module("crate::agent")
+                .must_not_call_inline("std::process::Command")
+                .because(AGENT_SPAWN_REASON),
         )
         .boundary(
             CrateBoundary::crate_("ringi-governance")
@@ -166,6 +178,91 @@ Regenerate it with `BLESS=1 cargo test -p ringi-governance law_projection_is_fre
         );
     }
 
+    /// A `Command` built in the agent seam fires whether it is reached through an aliased `use`
+    /// import or written fully qualified.
+    #[test]
+    fn a_spawn_hand_rolled_in_the_agent_seam_is_rejected() {
+        for (case, agent) in [
+            (
+                "alias",
+                "use std::process::Command as Spawn;\n\npub fn run() {\n    let _ = Spawn::new(\"agent\").status();\n}\n",
+            ),
+            (
+                "qualified",
+                "pub fn run() {\n    let _ = std::process::Command::new(\"agent\");\n}\n",
+            ),
+        ] {
+            let workspace = TempWorkspace::new(&format!("ringi-governance-agent-spawn-{case}"));
+            workspace.write_ringi(&[("agent", agent)]);
+
+            let report = workspace.violations();
+            assert!(
+                report.violations.iter().any(|violation| {
+                    violation.target() == "std::process::Command"
+                        && violation.finding == "std::process::Command::new in crate::agent"
+                        && violation
+                            .file
+                            .as_deref()
+                            .is_some_and(|path| path.ends_with("agent.rs"))
+                }),
+                "expected the agent spawn boundary to fire for the {case} spawn: {report:?}"
+            );
+        }
+    }
+
+    /// Shaped like the real `agent.rs`: a tests module globbing its parent with `use super::*`
+    /// makes a `type` alias of `Command` in the seam react fail-closed, even though the alias is
+    /// only ever used as a type.
+    #[test]
+    fn a_command_alias_reachable_through_a_glob_is_rejected() {
+        let workspace = TempWorkspace::new("ringi-governance-agent-glob-alias");
+        workspace.write_ringi(&[(
+            "agent",
+            "type Spawner = std::process::Command;\n\npub fn run(spawner: &mut Spawner) {\n    let _ = spawner.spawn();\n}\n\n#[cfg(test)]\nmod tests {\n    use super::*;\n}\n",
+        )]);
+
+        let report = workspace.violations();
+        assert!(
+            report.violations.iter().any(|violation| {
+                violation.target() == "std::process::Command"
+                    && violation.finding == "glob super in crate::agent"
+                    && violation
+                        .file
+                        .as_deref()
+                        .is_some_and(|path| path.ends_with("agent.rs"))
+            }),
+            "expected the agent spawn boundary to fire on the glob-reachable alias: {report:?}"
+        );
+    }
+
+    /// The agent seam composing `crate::exec`, which alone builds the `Command`, stays clean, as do
+    /// other `std::process` items in the seam; the binary root is not judged by this boundary.
+    #[test]
+    fn composing_the_exec_primitive_stays_clean() {
+        let workspace = TempWorkspace::new("ringi-governance-agent-exec-clean");
+        workspace.write_ringi(&[
+            (
+                "exec",
+                "use std::process::Command;\n\npub fn run(program: &str) {\n    let _ = Command::new(program);\n}\n",
+            ),
+            (
+                "agent",
+                "use crate::exec;\n\npub fn run() -> std::process::ExitCode {\n    let _ = std::process::id();\n    exec::run(\"agent\");\n    std::process::ExitCode::SUCCESS\n}\n",
+            ),
+        ]);
+        workspace.write_source(
+            "ringi",
+            "main.rs",
+            "fn main() {\n    let _ = std::process::Command::new(\"agent\");\n}\n",
+        );
+
+        let outcome = workspace.outcome();
+        assert!(
+            matches!(outcome, Outcome::Clean(_)),
+            "composing crate::exec from the agent seam must raise no violation: {outcome:?}"
+        );
+    }
+
     #[test]
     fn governance_dependency_beyond_tianheng_is_rejected() {
         let workspace = TempWorkspace::new("ringi-governance-extra-dependency");
@@ -241,10 +338,10 @@ Regenerate it with `BLESS=1 cargo test -p ringi-governance law_projection_is_fre
             workspace
         }
 
-        /// Write the ringi crate with every seam module present (empty unless given) plus the
-        /// given extra modules.
+        /// Write the ringi crate with every seam module and the agent module present (empty unless
+        /// given) plus the given extra modules.
         fn write_ringi(&self, modules: &[(&str, &str)]) {
-            let mut names = vec!["convergence", "registry", "residual_ledger"];
+            let mut names = vec!["agent", "convergence", "registry", "residual_ledger"];
             for (module, _) in modules {
                 if !names.contains(module) {
                     names.push(module);
