@@ -229,6 +229,8 @@ openspec instructions <artifact> --change "<change>"
 - Finalize with annotated tag `vX.Y.Z` on that commit, with message exactly `release: X.Y.Z`.
 - Push the tag without another commit. Release branches and empty release commits are not part
   of the flow.
+- Do not create a GitHub Release: `CHANGELOG.md` is the release notes, and its footer links
+  resolve to the tag page.
 
 ## Definition Of Done
 
