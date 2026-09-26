@@ -39,7 +39,7 @@ Before proposing or writing code, protect these axioms:
                     │  inherited discipline — provenance, not coupling
                     ▼
              ●  ringi  ── composes ──▶  the bricks named in PROJECT.md
-   note: skeleton from tacticaldoll/rust-family-template.
+   note: style from tacticaldoll/rust-family-template.
 ```
 
 Ringi is a **consumer**, not a brick. Unlike a brick it names what it composes: which products
