@@ -254,6 +254,7 @@ cargo +1.88 build --workspace
 ```
 
 CI (`.github/workflows/ci.yml`) runs the same gates on push and pull request; `ringi-governance`
-owns the seam-confinement law for the library and binary roots. As the surface grows, the DoD
-gains the security tests (path traversal, symlink escape, secret redaction, argument injection —
+owns the seam-confinement law for the library and binary roots and the agent seam's spawn boundary
+(no call under `std::process::Command` in `crate::agent`, library root). As the surface grows, the
+DoD gains the security tests (path traversal, symlink escape, secret redaction, argument injection —
 see `PROJECT.md` invariants) and running the app end to end on a fixture.
